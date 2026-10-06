@@ -1,0 +1,811 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>گزارش تحلیل Use Case - BehzadRest / T2B</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css" rel="stylesheet" type="text/css" />
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: Vazirmatn, Tahoma, sans-serif;
+      background: #e5e7eb;
+      color: #111827;
+    }
+    .a4-page {
+      width: 210mm;
+      height: 297mm;
+      margin: 18px auto 88px auto;
+      background: white;
+      border: 1px solid #d1d5db;
+      box-shadow: 0 18px 45px rgba(15, 23, 42, 0.18);
+      position: relative;
+      overflow: hidden;
+    }
+    .page-inner {
+      padding: 18mm 16mm 20mm 16mm;
+      height: calc(297mm - 18mm);
+      overflow: hidden;
+    }
+    .page-footer {
+      position: absolute;
+      bottom: 7mm;
+      right: 16mm;
+      left: 16mm;
+      border-top: 1px solid #e5e7eb;
+      padding-top: 4mm;
+      font-size: 11px;
+      color: #6b7280;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .nav-bar {
+      position: fixed;
+      left: 50%;
+      bottom: 18px;
+      transform: translateX(-50%);
+      z-index: 50;
+      background: rgba(17, 24, 39, 0.94);
+      color: white;
+      border-radius: 999px;
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.25);
+      padding: 10px 14px;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      backdrop-filter: blur(10px);
+    }
+    .nav-btn {
+      background: #2563eb;
+      color: white;
+      padding: 8px 14px;
+      border-radius: 999px;
+      font-size: 13px;
+      cursor: pointer;
+      transition: 0.15s;
+    }
+    .nav-btn:hover { background: #1d4ed8; }
+    .nav-btn:disabled {
+      background: #6b7280;
+      cursor: not-allowed;
+      opacity: 0.65;
+    }
+    .editable-name {
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      padding: 6px 8px;
+      min-width: 140px;
+      background: #f8fafc;
+      outline: none;
+      transition: 0.15s;
+      font-size: 12px;
+    }
+    .editable-name:focus {
+      border-color: #2563eb;
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
+      background: white;
+    }
+    .section-title {
+      font-weight: 800;
+      font-size: 17px;
+      color: #0f172a;
+      border-right: 5px solid #2563eb;
+      padding-right: 10px;
+      margin-bottom: 10px;
+    }
+    .fragment {
+      break-inside: avoid;
+      page-break-inside: avoid;
+      margin-bottom: 14px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 11.5px;
+    }
+    th {
+      background: #f1f5f9;
+      color: #0f172a;
+      font-weight: 800;
+      border: 1px solid #cbd5e1;
+      padding: 7px;
+      text-align: right;
+    }
+    td {
+      border: 1px solid #e2e8f0;
+      padding: 7px;
+      vertical-align: top;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 11px;
+      font-weight: 700;
+      background: #eff6ff;
+      color: #1d4ed8;
+      border: 1px solid #bfdbfe;
+    }
+    .ltr {
+      direction: ltr;
+      text-align: left;
+      font-family: Consolas, monospace;
+    }
+    #paginationProbe {
+      position: absolute;
+      visibility: hidden;
+      pointer-events: none;
+      width: 210mm;
+      height: 297mm;
+      overflow: hidden;
+      left: -9999px;
+      top: 0;
+      background: white;
+    }
+    @media print {
+      body { background: white; }
+      .nav-bar, .top-actions { display: none !important; }
+      .a4-page {
+        margin: 0;
+        box-shadow: none;
+        border: none;
+        page-break-after: always;
+      }
+      .a4-page.hidden-print { display: block !important; }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="top-actions max-w-[210mm] mx-auto mt-5 mb-3 flex items-center justify-between gap-3">
+    <div>
+      <h1 class="text-xl font-black text-slate-900">گزارش رسمی تحلیل Use Case و نگاشت داده</h1>
+      <p class="text-sm text-slate-600 mt-1">سامانه: BehzadRest / T2B — تحلیل کدهای Program، ApplicationContext، قفل استراحت، پایش Explorer و تاریخ شمسی</p>
+    </div>
+    <div class="flex gap-2">
+      <button onclick="exportState()" class="bg-emerald-600 hover:bg-emerald-700 text-white text-sm rounded-xl px-4 py-2 shadow">
+        Export JSON
+      </button>
+      <button onclick="window.print()" class="bg-slate-800 hover:bg-slate-900 text-white text-sm rounded-xl px-4 py-2 shadow">
+        چاپ گزارش
+      </button>
+    </div>
+  </div>
+
+  <div id="pageHost"></div>
+
+  <div id="paginationProbe" class="a4-page">
+    <div class="page-inner" id="probeInner"></div>
+  </div>
+
+  <div class="nav-bar">
+    <button id="prevBtn" class="nav-btn" onclick="prevPage()">صفحه قبلی</button>
+    <span id="pageCounter" class="text-sm font-bold px-2">صفحه 1 از 1</span>
+    <button id="nextBtn" class="nav-btn" onclick="nextPage()">صفحه بعدی</button>
+  </div>
+
+  <template id="reportFragments">
+    <section class="fragment">
+      <div class="rounded-2xl border border-slate-200 p-4 bg-gradient-to-l from-blue-50 to-white">
+        <div class="flex items-start justify-between gap-4">
+          <div>
+            <div class="text-xs text-slate-500 font-bold mb-1">شناسه Use Case</div>
+            <div class="text-3xl font-black text-blue-700">U101</div>
+          </div>
+          <div class="grow">
+            <div class="text-xs text-slate-500 font-bold mb-1">نام کسب‌وکاری قابل ویرایش</div>
+            <input class="editable-name w-full text-base font-bold"
+                   data-kind="useCase"
+                   data-id="U101"
+                   value="مدیریت اجباری وقفه استراحت کاربر در ویندوز"
+                   oninput="updateBusinessName(this)" />
+          </div>
+          <div class="text-left">
+            <span class="badge">نسخه تحلیل: 1.0</span>
+            <div class="text-xs text-slate-500 mt-2">تاریخ گزارش: 1405/05/11</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="fragment">
+      <h2 class="section-title">۱. خلاصه مدیریتی</h2>
+      <p class="text-sm leading-8 text-slate-700">
+        این کد یک ابزار دسکتاپ ویندوزی برای یادآوری و اعمال وقفه استراحت است. برنامه تنها یک نمونه فعال در کل سیستم اجرا می‌کند،
+        خود را در Startup ویندوز ثبت می‌کند، از طریق Tray در دسترس است، در بازه‌های زمانی تنظیم‌شده صفحه استراحت را فعال می‌کند،
+        ورودی‌های خاص صفحه‌کلید را در زمان استراحت محدود می‌سازد، مانیتورهای غیر اصلی را با پنجره‌های مشکی می‌پوشاند و روی مانیتور اصلی
+        یک فرم قفل/اسکرین‌سیور متحرک با ساعت، تاریخ شمسی، کاربر و زمان باقی‌مانده نمایش می‌دهد.
+      </p>
+      <div class="grid grid-cols-2 gap-3 mt-3 text-xs">
+        <div class="rounded-xl bg-slate-50 border border-slate-200 p-3">
+          <div class="font-extrabold text-slate-900 mb-1">منابع تحلیل</div>
+          <ul class="list-disc pr-5 leading-6 text-slate-600">
+            <li>Program.cs / Main و RegisterInStartup</li>
+            <li>BreakApplicationContext.cs / TimerTick، StartBreak، EndBreak، OpenInlineSettings</li>
+            <li>ExplorerWatcher.cs / Start، CheckExplorer، IsExplorerRunning</li>
+            <li>LockScreenManager.cs / Show و Hide</li>
+            <li>BreakScreenSaverControl.cs / StepAndInvalidate، OnPaint، DrawNeonInfoText</li>
+            <li>PersianDateService.cs / NowPersianDateString</li>
+          </ul>
+        </div>
+        <div class="rounded-xl bg-amber-50 border border-amber-200 p-3">
+          <div class="font-extrabold text-amber-900 mb-1">نکته دامنه داده</div>
+          <p class="leading-6 text-amber-800">
+            هیچ اتصال پایگاه داده، Query، جدول SQL یا Entity پایدار دیتابیسی در کد ارائه‌شده مشاهده نمی‌شود.
+            ذخیره‌سازی تنظیمات از طریق <span class="ltr">Settings.Load()</span> و <span class="ltr">Settings.Save()</span>
+            فراخوانی شده اما کلاس Settings در ورودی موجود نیست؛ همچنین ثبت Startup از طریق Registry ویندوز انجام می‌شود.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section class="fragment">
+      <h2 class="section-title">۲. مشخصات Use Case</h2>
+      <table>
+        <tbody>
+          <tr>
+            <th style="width:25%">Use Case ID</th>
+            <td>U101</td>
+          </tr>
+          <tr>
+            <th>نام سیستمی</th>
+            <td class="ltr">Enforce Scheduled User Break Lock</td>
+          </tr>
+          <tr>
+            <th>بازیگر اصلی</th>
+            <td>کاربر ویندوز</td>
+          </tr>
+          <tr>
+            <th>بازیگران/سیستم‌های پشتیبان</th>
+            <td>Windows Startup Registry، Windows Explorer Process، System Tray، Keyboard Hook، Multi-Monitor Display</td>
+          </tr>
+          <tr>
+            <th>هدف کسب‌وکاری</th>
+            <td>کاهش فرسودگی کاربر با اعمال وقفه‌های زمان‌بندی‌شده و جلوگیری از دور زدن ساده وقفه در سطح رابط کاربری.</td>
+          </tr>
+          <tr>
+            <th>پیش‌شرط‌ها</th>
+            <td>
+              <ul class="list-disc pr-5 leading-7">
+                <li>برنامه روی ویندوز اجرا شود و Mutex سراسری اجازه اجرای تنها یک نمونه را بدهد.</li>
+                <li>تنظیمات فاصله وقفه و مدت وقفه از طریق Settings قابل بارگذاری باشد.</li>
+                <li>برنامه امکان ساخت NotifyIcon، Timer، فرم‌های WinForms و دسترسی به Registry را داشته باشد.</li>
+              </ul>
+            </td>
+          </tr>
+          <tr>
+            <th>پس‌شرط‌ها</th>
+            <td>
+              <ul class="list-disc pr-5 leading-7">
+                <li>در پایان وقفه، قفل صفحه برداشته می‌شود و زمان وقفه بعدی مجدداً محاسبه می‌گردد.</li>
+                <li>در خروج برنامه، TrayIcon مخفی، Hook آزاد، Watcher متوقف و فرم‌های قفل بسته می‌شوند.</li>
+                <li>در صورت ثبت موفق Startup، برنامه در اجرای بعدی ویندوز به‌صورت خودکار آغاز می‌شود.</li>
+              </ul>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="fragment">
+      <h2 class="section-title">۳. جریان اصلی Use Case</h2>
+      <ol class="list-decimal pr-6 text-sm leading-8 text-slate-700">
+        <li>کاربر یا سیستم‌عامل برنامه BehzadRest را اجرا می‌کند.</li>
+        <li>برنامه با Mutex سراسری بررسی می‌کند که نمونه دیگری از برنامه در کل سیستم فعال نباشد.</li>
+        <li>در صورت نبود نمونه فعال، تنظیمات WinForms مقداردهی و برنامه برای اجرای خودکار در Startup ویندوز ثبت می‌شود.</li>
+        <li>Context اصلی برنامه ساخته می‌شود و Tray Menu شامل Settings، Start Break، End Break و Exit فعال می‌گردد.</li>
+        <li>Keyboard Hook نصب می‌شود تا میانبر پایان وقفه، به‌ویژه F2، قابل کنترل باشد.</li>
+        <li>پایش Explorer شروع می‌شود تا در صورت ری‌استارت شدن Explorer، Hook مجدداً نصب شود.</li>
+        <li>تنظیمات فاصله وقفه بارگذاری و زمان وقفه بعدی محاسبه می‌شود.</li>
+        <li>Timer هر ثانیه وضعیت را کنترل می‌کند و متن Tray را با زمان باقی‌مانده تا وقفه یا پایان وقفه به‌روزرسانی می‌کند.</li>
+        <li>وقتی زمان وقفه فرا برسد، وضعیت وقفه فعال می‌شود، مسدودسازی Keyboard Hook روشن می‌گردد و زمان پایان وقفه محاسبه می‌شود.</li>
+        <li>روی مانیتورهای غیر اصلی پنجره‌های سیاه تمام‌صفحه باز می‌شود و روی مانیتور اصلی فرم قفل/استراحت نمایش داده می‌شود.</li>
+        <li>کنترل گرافیکی اسکرین‌سیور با نرخ تقریباً ۶۰ فریم بر ثانیه ساعت نئونی، تاریخ شمسی، نام کاربر و زمان باقی‌مانده را نمایش می‌دهد.</li>
+        <li>با پایان زمان وقفه یا اجرای فرمان پایان وقفه، فرم‌ها بسته، Hook آزاد و زمان وقفه بعدی محاسبه می‌شود.</li>
+      </ol>
+    </section>
+
+    <section class="fragment">
+      <h2 class="section-title">۴. جریان‌های جایگزین و استثنا</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>کد جریان</th>
+            <th>شرط/رخداد</th>
+            <th>رفتار سیستم</th>
+            <th>منبع کدی</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>A1</td>
+            <td>نمونه‌ای از برنامه از قبل فعال است.</td>
+            <td>Mutex آزاد و برنامه بدون نمایش UI بسته می‌شود.</td>
+            <td>Program.cs / Main</td>
+          </tr>
+          <tr>
+            <td>A2</td>
+            <td>کاربر از Tray گزینه Start Break را می‌زند.</td>
+            <td>وقفه بدون انتظار برای Timer شروع می‌شود، مگر اینکه وقفه از قبل فعال باشد.</td>
+            <td>BreakApplicationContext.cs / StartBreak</td>
+          </tr>
+          <tr>
+            <td>A3</td>
+            <td>کاربر از Tray گزینه End Break یا کلید F2 را می‌زند.</td>
+            <td>وقفه خاتمه یافته و منابع نمایشی آزاد می‌شوند.</td>
+            <td>BreakApplicationContext.cs / EndBreak و OnF2Pressed</td>
+          </tr>
+          <tr>
+            <td>A4</td>
+            <td>دسترسی Admin برای ثبت در HKEY_LOCAL_MACHINE وجود ندارد.</td>
+            <td>برنامه به‌جای کرش، ثبت Startup را در HKEY_CURRENT_USER امتحان می‌کند.</td>
+            <td>Program.cs / RegisterInStartup</td>
+          </tr>
+          <tr>
+            <td>E1</td>
+            <td>خطای عمومی در نوشتن Registry رخ دهد.</td>
+            <td>خطا در Debug Log ثبت می‌شود و اجرای برنامه ادامه می‌یابد.</td>
+            <td>Program.cs / catch Exception</td>
+          </tr>
+          <tr>
+            <td>E2</td>
+            <td>خطا در بررسی Processهای Explorer رخ دهد.</td>
+            <td>تابع وضعیت Explorer را false برمی‌گرداند تا Watcher پایدار بماند.</td>
+            <td>ExplorerWatcher.cs / IsExplorerRunning</td>
+          </tr>
+          <tr>
+            <td>E3</td>
+            <td>فراخوانی Start پس از Dispose شدن ExplorerWatcher.</td>
+            <td>استثنای ObjectDisposedException ایجاد می‌شود.</td>
+            <td>ExplorerWatcher.cs / ThrowIfDisposed</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="fragment">
+      <h2 class="section-title">۵. نگاشت موجودیت‌ها و داده‌ها</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>موجودیت/منبع فنی</th>
+            <th>فیلد/عضو فنی</th>
+            <th>نام کسب‌وکاری پیشنهادی/قابل ویرایش</th>
+            <th>نوع/ماهیت</th>
+            <th>شرح</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="ltr">Program</td>
+            <td class="ltr">_globalMutex</td>
+            <td><input class="editable-name" data-kind="entity" data-id="Program._globalMutex" value="قفل اجرای تک‌نمونه‌ای برنامه" oninput="updateBusinessName(this)" /></td>
+            <td>Runtime State</td>
+            <td>برای جلوگیری از اجرای همزمان چند نمونه از برنامه در کل سیستم.</td>
+          </tr>
+          <tr>
+            <td class="ltr">Windows Registry Run Key</td>
+            <td class="ltr">BehzadRest</td>
+            <td><input class="editable-name" data-kind="entity" data-id="Registry.BehzadRest" value="ثبت اجرای خودکار برنامه" oninput="updateBusinessName(this)" /></td>
+            <td>OS Persistence</td>
+            <td>ثبت مسیر اجرایی برنامه در Startup ویندوز؛ ابتدا LocalMachine و در صورت عدم دسترسی CurrentUser.</td>
+          </tr>
+          <tr>
+            <td class="ltr">Settings</td>
+            <td class="ltr">BreakInterval</td>
+            <td><input class="editable-name" data-kind="entity" data-id="Settings.BreakInterval" value="فاصله زمانی بین وقفه‌ها" oninput="updateBusinessName(this)" /></td>
+            <td>Configuration</td>
+            <td>تعداد دقیقه تا شروع وقفه بعدی؛ از ۱ تا ۲۴۰ در فرم تنظیمات محدود شده است.</td>
+          </tr>
+          <tr>
+            <td class="ltr">Settings</td>
+            <td class="ltr">BreakDuration</td>
+            <td><input class="editable-name" data-kind="entity" data-id="Settings.BreakDuration" value="مدت زمان وقفه استراحت" oninput="updateBusinessName(this)" /></td>
+            <td>Configuration</td>
+            <td>مدت دقیقه‌ای قفل استراحت؛ از ۱ تا ۶۰ در فرم تنظیمات محدود شده است.</td>
+          </tr>
+          <tr>
+            <td class="ltr">BreakApplicationContext</td>
+            <td class="ltr">_nextBreak</td>
+            <td><input class="editable-name" data-kind="entity" data-id="BreakApplicationContext._nextBreak" value="زمان شروع وقفه بعدی" oninput="updateBusinessName(this)" /></td>
+            <td>Runtime State</td>
+            <td>براساس زمان فعلی و BreakInterval محاسبه می‌شود.</td>
+          </tr>
+          <tr>
+            <td class="ltr">BreakApplicationContext</td>
+            <td class="ltr">_breakEnd</td>
+            <td><input class="editable-name" data-kind="entity" data-id="BreakApplicationContext._breakEnd" value="زمان پایان وقفه جاری" oninput="updateBusinessName(this)" /></td>
+            <td>Runtime State</td>
+            <td>براساس زمان فعلی و BreakDuration محاسبه می‌شود.</td>
+          </tr>
+          <tr>
+            <td class="ltr">BreakApplicationContext</td>
+            <td class="ltr">_isBreakActive</td>
+            <td><input class="editable-name" data-kind="entity" data-id="BreakApplicationContext._isBreakActive" value="وضعیت فعال بودن وقفه" oninput="updateBusinessName(this)" /></td>
+            <td>Runtime Flag</td>
+            <td>مانع شروع دوباره وقفه هنگام فعال بودن وقفه قبلی می‌شود.</td>
+          </tr>
+          <tr>
+            <td class="ltr">ExplorerWatcher</td>
+            <td class="ltr">_wasRunning</td>
+            <td><input class="editable-name" data-kind="entity" data-id="ExplorerWatcher._wasRunning" value="وضعیت قبلی اجرای Explorer" oninput="updateBusinessName(this)" /></td>
+            <td>Runtime Flag</td>
+            <td>برای تشخیص توقف و راه‌اندازی مجدد Explorer استفاده می‌شود.</td>
+          </tr>
+          <tr>
+            <td class="ltr">BreakScreenSaverControl</td>
+            <td class="ltr">_pos / _vel</td>
+            <td><input class="editable-name" data-kind="entity" data-id="BreakScreenSaverControl.motion" value="موقعیت و سرعت بلوک نمایشی استراحت" oninput="updateBusinessName(this)" /></td>
+            <td>UI Runtime State</td>
+            <td>حرکت بلوک ساعت و اطلاعات روی صفحه را کنترل می‌کند.</td>
+          </tr>
+          <tr>
+            <td class="ltr">PersianDateService</td>
+            <td class="ltr">NowPersianDateString()</td>
+            <td><input class="editable-name" data-kind="entity" data-id="PersianDateService.NowPersianDateString" value="تاریخ شمسی روز جاری" oninput="updateBusinessName(this)" /></td>
+            <td>Computed Value</td>
+            <td>تاریخ سیستم را با PersianCalendar به قالب yyyy/MM/dd تبدیل می‌کند.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="fragment">
+      <h2 class="section-title">۶. کنترل‌ها، اعتبارسنجی‌ها و قواعد کسب‌وکار</h2>
+      <div class="grid grid-cols-2 gap-3 text-sm leading-7">
+        <div class="rounded-xl border border-slate-200 p-3 bg-slate-50">
+          <div class="font-extrabold mb-1">قواعد زمان‌بندی</div>
+          <ul class="list-disc pr-5 text-slate-700">
+            <li>Timer اصلی هر ۱۰۰۰ میلی‌ثانیه اجرا می‌شود.</li>
+            <li>در حالت عادی، زمان باقی‌مانده تا وقفه بعدی در Tray نمایش داده می‌شود.</li>
+            <li>در حالت وقفه، زمان باقی‌مانده تا پایان استراحت نمایش داده می‌شود.</li>
+          </ul>
+        </div>
+        <div class="rounded-xl border border-slate-200 p-3 bg-slate-50">
+          <div class="font-extrabold mb-1">قواعد تنظیمات</div>
+          <ul class="list-disc pr-5 text-slate-700">
+            <li>BreakInterval حداقل ۱ و حداکثر ۲۴۰ دقیقه است.</li>
+            <li>BreakDuration حداقل ۱ و حداکثر ۶۰ دقیقه است.</li>
+            <li>پس از ذخیره تنظیمات، زمان وقفه بعدی دوباره محاسبه می‌شود.</li>
+          </ul>
+        </div>
+        <div class="rounded-xl border border-slate-200 p-3 bg-slate-50">
+          <div class="font-extrabold mb-1">قواعد قفل صفحه</div>
+          <ul class="list-disc pr-5 text-slate-700">
+            <li>فرم اصلی روی مانیتور Primary باز می‌شود.</li>
+            <li>مانیتورهای غیر اصلی با پنجره مشکی TopMost پوشانده می‌شوند.</li>
+            <li>در شروع مجدد وقفه، ابتدا فرم‌های قفل قبلی بسته می‌شوند.</li>
+          </ul>
+        </div>
+        <div class="rounded-xl border border-slate-200 p-3 bg-slate-50">
+          <div class="font-extrabold mb-1">قواعد پایداری</div>
+          <ul class="list-disc pr-5 text-slate-700">
+            <li>در ری‌استارت Explorer، Keyboard Hook مجدداً نصب می‌شود.</li>
+            <li>در خروج برنامه، منابع Hook، Watcher و فرم‌ها آزاد می‌شوند.</li>
+            <li>خطاهای Registry مانع اجرای برنامه نمی‌شوند.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="fragment">
+      <h2 class="section-title">۷. نمودار Use Case خودکار</h2>
+      <div class="rounded-2xl border border-slate-200 p-4 bg-white">
+        <div class="flex justify-between items-center mb-3">
+          <p class="text-sm text-slate-600">
+            نمودار زیر به‌صورت خودکار با Canvas و JavaScript خالص رسم می‌شود و ساختار Actor، مرز سیستم و Use Caseهای اصلی را نمایش می‌دهد.
+          </p>
+          <button onclick="saveDiagram()" class="bg-blue-600 hover:bg-blue-700 text-white rounded-xl px-4 py-2 text-sm shadow">
+            دانلود فلوچارت
+          </button>
+        </div>
+        <canvas id="useCaseCanvas" width="900" height="460" class="w-full rounded-xl border border-slate-300 bg-slate-50"></canvas>
+      </div>
+    </section>
+
+    <section class="fragment">
+      <h2 class="section-title">۸. نبود نگاشت دیتابیس</h2>
+      <div class="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm leading-8 text-rose-900">
+        در کد ارائه‌شده هیچ جدول، ستون، stored procedure، connection string، ORM mapping، فایل migration یا دستور SQL مشاهده نشد.
+        بنابراین «جدول نگاشت دیتابیس» در این نسخه به منابع داده‌ای غیر SQL یعنی Registry، Settings و Stateهای Runtime محدود شده است.
+        برای تکمیل Data Dictionary دیتابیسی، لازم است پیاده‌سازی کلاس Settings یا هر لایه Persistence دیگر نیز ارائه شود.
+      </div>
+    </section>
+
+    <section class="fragment">
+      <h2 class="section-title">۹. تحلیل معمارانه</h2>
+      <p class="text-sm leading-8 text-slate-700">
+        معماری برنامه رویدادمحور و سبک است و مسئولیت‌های زمان‌بندی، قفل صفحه، پایش Explorer و نمایش گرافیکی تا حد قابل قبولی تفکیک شده‌اند.<br>
+        نقطه بهبود اصلی، تزریق وابستگی برای Settings، KeyboardHook و Registry و افزودن لاگ ساختاریافته برای پایداری عملیاتی است.
+      </p>
+    </section>
+  </template>
+
+  <script>
+    const useCaseState = {
+      meta: {
+        generatedAtGregorian: "2026-08-02",
+        generatedAtJalali: "1405/05/11",
+        systemName: "BehzadRest / T2B",
+        sourceFiles: [
+          "Program.cs",
+          "BreakApplicationContext.cs",
+          "BreakLockForm.cs",
+          "BreakLockForm.Designer.cs",
+          "BreakScreenSaverControl.cs",
+          "ExplorerWatcher.cs",
+          "LockScreenManager.cs",
+          "PersianDateService.cs"
+        ],
+        ownerFooter: "مالک معنوی سورس‌کد: شرکت طرح اندیشان پویا"
+      },
+      useCases: [
+        {
+          id: "U101",
+          technicalName: "Enforce Scheduled User Break Lock",
+          suggestedPersianName: "مدیریت اجباری وقفه استراحت کاربر در ویندوز",
+          userEditedName: "مدیریت اجباری وقفه استراحت کاربر در ویندوز"
+        }
+      ],
+      entities: [
+        { id: "Program._globalMutex", technicalName: "_globalMutex", suggestedPersianName: "قفل اجرای تک‌نمونه‌ای برنامه", userEditedName: "قفل اجرای تک‌نمونه‌ای برنامه" },
+        { id: "Registry.BehzadRest", technicalName: "BehzadRest Run Key", suggestedPersianName: "ثبت اجرای خودکار برنامه", userEditedName: "ثبت اجرای خودکار برنامه" },
+        { id: "Settings.BreakInterval", technicalName: "BreakInterval", suggestedPersianName: "فاصله زمانی بین وقفه‌ها", userEditedName: "فاصله زمانی بین وقفه‌ها" },
+        { id: "Settings.BreakDuration", technicalName: "BreakDuration", suggestedPersianName: "مدت زمان وقفه استراحت", userEditedName: "مدت زمان وقفه استراحت" },
+        { id: "BreakApplicationContext._nextBreak", technicalName: "_nextBreak", suggestedPersianName: "زمان شروع وقفه بعدی", userEditedName: "زمان شروع وقفه بعدی" },
+        { id: "BreakApplicationContext._breakEnd", technicalName: "_breakEnd", suggestedPersianName: "زمان پایان وقفه جاری", userEditedName: "زمان پایان وقفه جاری" },
+        { id: "BreakApplicationContext._isBreakActive", technicalName: "_isBreakActive", suggestedPersianName: "وضعیت فعال بودن وقفه", userEditedName: "وضعیت فعال بودن وقفه" },
+        { id: "ExplorerWatcher._wasRunning", technicalName: "_wasRunning", suggestedPersianName: "وضعیت قبلی اجرای Explorer", userEditedName: "وضعیت قبلی اجرای Explorer" },
+        { id: "BreakScreenSaverControl.motion", technicalName: "_pos / _vel", suggestedPersianName: "موقعیت و سرعت بلوک نمایشی استراحت", userEditedName: "موقعیت و سرعت بلوک نمایشی استراحت" },
+        { id: "PersianDateService.NowPersianDateString", technicalName: "NowPersianDateString()", suggestedPersianName: "تاریخ شمسی روز جاری", userEditedName: "تاریخ شمسی روز جاری" }
+      ]
+    };
+
+    let pages = [];
+    let currentPage = 0;
+
+    function updateBusinessName(input) {
+      const kind = input.dataset.kind;
+      const id = input.dataset.id;
+      const value = input.value;
+
+      if (kind === "useCase") {
+        const item = useCaseState.useCases.find(x => x.id === id);
+        if (item) item.userEditedName = value;
+      }
+
+      if (kind === "entity") {
+        const item = useCaseState.entities.find(x => x.id === id);
+        if (item) item.userEditedName = value;
+      }
+    }
+
+    function exportState() {
+      const blob = new Blob([JSON.stringify(useCaseState, null, 2)], { type: "application/json;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "useCaseState_U101.json";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    function makePage(contentHtml, pageNo) {
+      const page = document.createElement("div");
+      page.className = "a4-page";
+      page.innerHTML = `
+        <div class="page-inner">${contentHtml}</div>
+        <div class="page-footer">
+          <span>مالک معنوی سورس‌کد: شرکت طرح اندیشان پویا</span>
+          <span>صفحه ${pageNo}</span>
+        </div>
+      `;
+      return page;
+    }
+
+    function paginate() {
+      const host = document.getElementById("pageHost");
+      const template = document.getElementById("reportFragments");
+      const fragments = Array.from(template.content.children).map(x => x.cloneNode(true));
+      const probeInner = document.getElementById("probeInner");
+
+      host.innerHTML = "";
+      pages = [];
+      let currentFragments = [];
+
+      const maxHeight = probeInner.clientHeight || 930;
+
+      fragments.forEach(fragment => {
+        currentFragments.push(fragment.outerHTML);
+        probeInner.innerHTML = currentFragments.join("");
+
+        if (probeInner.scrollHeight > maxHeight) {
+          currentFragments.pop();
+          pages.push(currentFragments.join(""));
+          currentFragments = [fragment.outerHTML];
+          probeInner.innerHTML = currentFragments.join("");
+        }
+      });
+
+      if (currentFragments.length > 0) pages.push(currentFragments.join(""));
+
+      pages.forEach((html, idx) => {
+        const page = makePage(html, idx + 1);
+        if (idx !== 0) page.style.display = "none";
+        host.appendChild(page);
+      });
+
+      currentPage = 0;
+      updateNav();
+      setTimeout(drawUseCaseDiagram, 100);
+    }
+
+    function showPage(index) {
+      const pageEls = Array.from(document.querySelectorAll("#pageHost .a4-page"));
+      pageEls.forEach((p, i) => p.style.display = i === index ? "block" : "none");
+      currentPage = index;
+      updateNav();
+      setTimeout(drawUseCaseDiagram, 100);
+    }
+
+    function nextPage() {
+      if (currentPage < pages.length - 1) showPage(currentPage + 1);
+    }
+
+    function prevPage() {
+      if (currentPage > 0) showPage(currentPage - 1);
+    }
+
+    function updateNav() {
+      document.getElementById("pageCounter").textContent = `صفحه ${currentPage + 1} از ${pages.length}`;
+      document.getElementById("prevBtn").disabled = currentPage === 0;
+      document.getElementById("nextBtn").disabled = currentPage === pages.length - 1;
+    }
+
+    function drawActor(ctx, x, y, label) {
+      ctx.strokeStyle = "#111827";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(x, y, 18, 0, Math.PI * 2);
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.moveTo(x, y + 18);
+      ctx.lineTo(x, y + 88);
+      ctx.moveTo(x - 38, y + 44);
+      ctx.lineTo(x + 38, y + 44);
+      ctx.moveTo(x, y + 88);
+      ctx.lineTo(x - 34, y + 138);
+      ctx.moveTo(x, y + 88);
+      ctx.lineTo(x + 34, y + 138);
+      ctx.stroke();
+
+      ctx.font = "bold 18px Arial";
+      ctx.fillStyle = "#111827";
+      ctx.textAlign = "center";
+      ctx.fillText(label, x, y + 168);
+    }
+
+    function drawOval(ctx, x, y, w, h, text) {
+      ctx.beginPath();
+      ctx.ellipse(x, y, w / 2, h / 2, 0, 0, Math.PI * 2);
+      ctx.fillStyle = "#eff6ff";
+      ctx.fill();
+      ctx.strokeStyle = "#2563eb";
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+
+      ctx.fillStyle = "#1e3a8a";
+      ctx.font = "bold 15px Arial";
+      ctx.textAlign = "center";
+
+      const words = text.split(" ");
+      let line = "";
+      const lines = [];
+      words.forEach(word => {
+        const test = line + word + " ";
+        if (ctx.measureText(test).width > w - 26 && line) {
+          lines.push(line.trim());
+          line = word + " ";
+        } else {
+          line = test;
+        }
+      });
+      lines.push(line.trim());
+
+      const startY = y - ((lines.length - 1) * 18) / 2;
+      lines.forEach((l, i) => ctx.fillText(l, x, startY + i * 18));
+    }
+
+    function drawLine(ctx, x1, y1, x2, y2) {
+      ctx.strokeStyle = "#64748b";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+    }
+
+    function drawUseCaseDiagram() {
+      const canvas = document.getElementById("useCaseCanvas");
+      if (!canvas) return;
+
+      const ctx = canvas.getContext("2d");
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      ctx.fillStyle = "#f8fafc";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      ctx.fillStyle = "#0f172a";
+      ctx.font = "bold 24px Arial";
+      ctx.textAlign = "center";
+      ctx.fillText("Use Case Diagram - BehzadRest Break Enforcement", canvas.width / 2, 38);
+
+      drawActor(ctx, 90, 125, "Windows User");
+
+      ctx.strokeStyle = "#334155";
+      ctx.lineWidth = 2.5;
+      ctx.strokeRect(250, 70, 560, 345);
+
+      ctx.fillStyle = "#334155";
+      ctx.font = "bold 18px Arial";
+      ctx.textAlign = "center";
+      ctx.fillText("BehzadRest / T2B System", 530, 96);
+
+      drawOval(ctx, 505, 145, 250, 58, "Run Single Instance");
+      drawOval(ctx, 505, 220, 250, 58, "Register Windows Startup");
+      drawOval(ctx, 505, 295, 250, 58, "Start Scheduled Break");
+      drawOval(ctx, 505, 370, 250, 58, "End Break and Reset Timer");
+
+      drawOval(ctx, 690, 255, 190, 54, "Monitor Explorer Restart");
+      drawOval(ctx, 325, 255, 190, 54, "Edit Break Settings");
+
+      drawLine(ctx, 130, 170, 380, 145);
+      drawLine(ctx, 130, 185, 380, 220);
+      drawLine(ctx, 130, 200, 380, 295);
+      drawLine(ctx, 130, 215, 380, 370);
+      drawLine(ctx, 130, 230, 230, 255);
+
+      ctx.setLineDash([8, 6]);
+      drawLine(ctx, 620, 295, 690, 282);
+      drawLine(ctx, 390, 255, 315, 255);
+      ctx.setLineDash([]);
+
+      ctx.fillStyle = "#475569";
+      ctx.font = "12px Arial";
+      ctx.fillText("Keyboard Hook / Tray / Timer / Multi-Monitor Lock", 530, 438);
+    }
+
+    function saveDiagram() {
+      const canvas = document.getElementById("useCaseCanvas");
+      if (!canvas) return;
+
+      const temp = document.createElement("canvas");
+      temp.width = canvas.width;
+      temp.height = canvas.height;
+      const tctx = temp.getContext("2d");
+      tctx.fillStyle = "#ffffff";
+      tctx.fillRect(0, 0, temp.width, temp.height);
+      tctx.drawImage(canvas, 0, 0);
+
+      const link = document.createElement("a");
+      link.download = "Image+useCase.jpg";
+      link.href = temp.toDataURL("image/jpeg", 0.92);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    }
+
+    window.addEventListener("load", paginate);
+    window.addEventListener("resize", () => {
+      clearTimeout(window.__paginateTimer);
+      window.__paginateTimer = setTimeout(paginate, 250);
+    });
+  </script>
+</body>
+</html>
