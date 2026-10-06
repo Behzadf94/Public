@@ -1,0 +1,327 @@
+# patch_apply.py
+# Targeted patch for hw_audit.py. Run from the same directory.
+from __future__ import annotations
+
+import datetime
+from pathlib import Path
+import sys
+
+TARGET = Path(__file__).resolve().with_name("hw_audit.py")
+
+
+def replace_region(text: str, start_marker: str, end_marker: str, replacement: str) -> str:
+    if text.count(start_marker) != 1:
+        raise RuntimeError(f"Expected exactly one start marker: {start_marker!r}")
+    start = text.index(start_marker)
+    end = text.find(end_marker, start)
+    if end < 0:
+        raise RuntimeError(f"End marker not found after {start_marker!r}")
+    return text[:start] + replacement.rstrip() + "\n\n" + text[end:]
+
+
+def main() -> int:
+    if not TARGET.is_file():
+        print(f"Target file not found: {TARGET}")
+        return 1
+
+    original_bytes = TARGET.read_bytes()
+    has_bom = original_bytes.startswith(b"\xef\xbb\xbf")
+    try:
+        source = original_bytes.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        print(f"Target is not valid UTF-8; no changes made: {exc}")
+        return 1
+
+    if "PATCH_APPLY_HW_AUDIT_V1" in source:
+        print("Patch marker already exists; no changes made.")
+        return 0
+
+    updated = source
+
+    # Required imports.
+    if "import base64" not in updated:
+        updated = updated.replace("import ctypes\n", "import ctypes\nimport base64\n", 1)
+    if "import math" not in updated:
+        updated = updated.replace("import json\n", "import json\nimport math\n", 1)
+    if "from concurrent.futures import ProcessPoolExecutor" not in updated:
+        updated = updated.replace(
+            "from concurrent.futures import ThreadPoolExecutor",
+            "from concurrent.futures import ProcessPoolExecutor",
+            1,
+        )
+    if "import datetime" not in updated:
+        updated = updated.replace("import time\n", "import time\nimport datetime\n", 1)
+
+    # UTF-8-safe PowerShell JSON transport: JSON is UTF-8 encoded in PowerShell,
+    # then transported as ASCII Base64, avoiding console-codepage ambiguity.
+    run_ps_replacement = '''def run_ps_json(script: str) -> Any:
+    """Run PowerShell and decode JSON through an ASCII Base64 transport."""
+    wrapper = (
+        "$ProgressPreference='SilentlyContinue'; "
+        "$ErrorActionPreference='Stop'; "
+        "$__result = & { " + script + " }; "
+        "$__json = ConvertTo-Json -InputObject $__result -Depth 8 -Compress; "
+        "[Console]::Out.Write([Convert]::ToBase64String("
+        "[Text.Encoding]::UTF8.GetBytes([string]$__json)))"
+    )
+    encoded_command = base64.b64encode(wrapper.encode("utf-16le")).decode("ascii")
+    try:
+        proc = subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+             "-EncodedCommand", encoded_command],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=20,
+            check=False,
+        )
+        output = proc.stdout.strip()
+        if not output:
+            return None
+        json_text = base64.b64decode(output, validate=True).decode("utf-8")
+        return json.loads(json_text)
+    except Exception:
+        return None
+'''
+    updated = replace_region(
+        updated, "def run_ps_json(", "def run_cmd_text(", run_ps_replacement
+    )
+
+    helpers = '''# PATCH_APPLY_HW_AUDIT_V1
+def _get_total_ram_bytes(computer_data: Any, storage_data: Any) -> int:
+    """Read installed RAM from CIM data, memory slots, then the Win32 API."""
+    if isinstance(computer_data, list):
+        computer_data = computer_data[0] if computer_data else {}
+    if isinstance(computer_data, dict):
+        try:
+            value = int(float(computer_data.get("TotalPhysicalMemory") or 0))
+            if value > 0:
+                return value
+        except (TypeError, ValueError, OverflowError):
+            pass
+
+    slots = storage_data.get("MemorySlots", []) if isinstance(storage_data, dict) else []
+    if isinstance(slots, dict):
+        slots = [slots]
+    try:
+        total_gb = sum(float(slot.get("CapacityGB") or 0) for slot in slots if isinstance(slot, dict))
+        if total_gb > 0:
+            return int(total_gb * (1024 ** 3))
+    except (TypeError, ValueError, OverflowError):
+        pass
+
+    if os.name == "nt":
+        class MEMORYSTATUSEX(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+
+        try:
+            status = MEMORYSTATUSEX()
+            status.dwLength = ctypes.sizeof(status)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+                return int(status.ullTotalPhys)
+        except Exception:
+            pass
+    return 0
+
+
+def _get_registry_gpu_vram_bytes() -> int:
+    """Best-effort read of dedicated video memory from Windows display-device registry keys."""
+    script = r"""
+    $items = @(
+        Get-ChildItem 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Video' -ErrorAction SilentlyContinue |
+        ForEach-Object {
+            Get-ChildItem $_.PSPath -ErrorAction SilentlyContinue |
+            ForEach-Object {
+                $p = Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue
+                if ($null -ne $p) {
+                    $bytes = 0.0
+                    foreach ($name in @('HardwareInformation.qwMemorySize','DedicatedVideoMemory','HardwareInformation.MemorySize')) {
+                        $prop = $p.PSObject.Properties[$name]
+                        if ($null -ne $prop -and $null -ne $prop.Value) {
+                            try {
+                                if ($prop.Value -is [byte[]]) {
+                                    if ($prop.Value.Length -ge 8) {
+                                        $candidate = [BitConverter]::ToUInt64($prop.Value, 0)
+                                    } elseif ($prop.Value.Length -ge 4) {
+                                        $candidate = [BitConverter]::ToUInt32($prop.Value, 0)
+                                    } else {
+                                        $candidate = 0
+                                    }
+                                } else {
+                                    $candidate = [double]$prop.Value
+                                }
+                                if ($candidate -gt $bytes) { $bytes = $candidate }
+                            } catch {}
+                        }
+                    }
+                    if ($bytes -gt 0) { [pscustomobject]@{ Bytes = $bytes } }
+                }
+            }
+        }
+    )
+    [pscustomobject]@{ Items = $items }
+    """
+    result = run_ps_json(script)
+    if isinstance(result, dict):
+        items = result.get("Items") or []
+    else:
+        items = result or []
+    if isinstance(items, dict):
+        items = [items]
+
+    values = []
+    for item in items:
+        if isinstance(item, dict):
+            try:
+                value = int(float(item.get("Bytes") or 0))
+                if value > 0:
+                    values.append(value)
+            except (TypeError, ValueError, OverflowError):
+                pass
+    return max(values, default=0)
+
+
+def _count_primes_in_range(bounds: tuple[int, int]) -> int:
+    start, end = bounds
+    count = 0
+    for number in range(start, end):
+        if number < 2:
+            continue
+        is_prime = True
+        limit = math.isqrt(number)
+        for divisor in range(2, limit + 1):
+            if number % divisor == 0:
+                is_prime = False
+                break
+        if is_prime:
+            count += 1
+    return count
+'''
+    updated = replace_region(
+        updated, "def _eval_ai_readiness(", "def _eval_ai_readiness(", ""
+    ) if False else updated
+    # Insert helpers immediately before the existing AI-readiness function.
+    if updated.count("def _eval_ai_readiness(") != 1:
+        raise RuntimeError("Could not uniquely locate _eval_ai_readiness().")
+    updated = updated.replace("def _eval_ai_readiness(", helpers + "\n\ndef _eval_ai_readiness(", 1)
+
+    benchmark_replacement = '''def _run_quick_cpu_benchmark() -> Dict[str, Any]:
+    """Run a repeatable prime-count throughput test; this is not a PassMark score."""
+    lower, upper = 2, 120_000
+    total_candidates = upper - lower
+    t0 = time.perf_counter()
+    _count_primes_in_range((lower, upper))
+    single_sec = max(time.perf_counter() - t0, 1e-9)
+
+    cores = max(1, min(os.cpu_count() or 1, 8))
+    chunk_size = (total_candidates + cores - 1) // cores
+    ranges = [
+        (lower + index * chunk_size, min(upper, lower + (index + 1) * chunk_size))
+        for index in range(cores)
+        if lower + index * chunk_size < upper
+    ]
+    workers = max(1, len(ranges))
+
+    t1 = time.perf_counter()
+    try:
+        with ProcessPoolExecutor(max_workers=workers) as executor:
+            list(executor.map(_count_primes_in_range, ranges))
+    except Exception:
+        # Keep the audit usable in restricted/frozen environments.
+        _count_primes_in_range((lower, upper))
+    multi_sec = max(time.perf_counter() - t1, 1e-9)
+
+    return {
+        # Kept under the old keys for compatibility. These are throughput
+        # figures, not percentages and not PassMark/Cinebench-equivalent scores.
+        "single_thread_score": int(total_candidates / single_sec),
+        "multi_thread_score": int(total_candidates / multi_sec),
+        "execution_sec": round(multi_sec, 2),
+        "tested_cores": workers,
+        "score_unit": "candidate_numbers_per_second",
+        "benchmark_method": "Python prime-count throughput; not PassMark",
+        "single_thread_sec": round(single_sec, 3),
+    }
+'''
+    updated = replace_region(
+        updated,
+        "def _run_quick_cpu_benchmark(",
+        "@CommandRegistry.register(",
+        benchmark_replacement,
+    )
+
+    parse_replacement = '''        # Parse RAM & VRAM using CIM plus fallbacks.
+        computer_data = bios_data.get("Computer", {})
+        total_bytes = _get_total_ram_bytes(computer_data, storage_data)
+        total_ram_gb = round(total_bytes / (1024 ** 3), 2) if total_bytes > 0 else 0.0
+
+        vram_detected_gb = 0.0
+        primary_gpu_name = "Integrated / Standard Display"
+        gpus_list = gpu_data.get("GPUs") or []
+        if isinstance(gpus_list, dict):
+            gpus_list = [gpus_list]
+
+        if gpus_list:
+            primary_gpu_name = str(gpus_list[0].get("Name") or "Standard GPU")
+            reported_vram = []
+            for gpu in gpus_list:
+                if isinstance(gpu, dict):
+                    try:
+                        amount = float(gpu.get("VRAM_GB") or 0.0)
+                        if amount > 0:
+                            reported_vram.append(amount)
+                    except (TypeError, ValueError, OverflowError):
+                        pass
+
+            # Use the largest reported adapter value and compare it with the
+            # registry fallback, which can avoid Win32_VideoController overflow.
+            vram_detected_gb = max(reported_vram, default=0.0)
+            registry_bytes = _get_registry_gpu_vram_bytes()
+            if registry_bytes > 0:
+                vram_detected_gb = max(vram_detected_gb, registry_bytes / (1024 ** 3))
+
+'''
+    updated = replace_region(
+        updated,
+        "        # Parse RAM & VRAM",
+        "        cpu_threads = int(",
+        parse_replacement,
+    )
+
+    if updated == source:
+        print("No changes were produced; no file was modified.")
+        return 1
+
+    # Preserve a UTF-8 BOM if the original file had one.
+    output_bytes = updated.encode("utf-8")
+    if has_bom:
+        output_bytes = b"\\xef\\xbb\\xbf" + output_bytes
+
+    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup = TARGET.with_name(f"{TARGET.name}.bak_{stamp}")
+    try:
+        backup.write_bytes(original_bytes)
+        TARGET.write_bytes(output_bytes)
+    except Exception as exc:
+        print(f"Patch failed: {exc}")
+        if backup.exists():
+            print(f"Original backup: {backup}")
+        return 1
+
+    print(f"Patch applied: {TARGET}")
+    print(f"Backup created: {backup}")
+    print("Next: run the application and verify RAM, VRAM, and benchmark fields.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

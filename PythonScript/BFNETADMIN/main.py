@@ -1,0 +1,810 @@
+﻿# -*- coding: utf-8 -*-
+"""BFNETADMIN - Enterprise IT Management Studio Dashboard"""
+import os
+import sys
+import json
+import threading
+import tkinter as tk
+from tkinter import ttk, messagebox
+
+_DIR = os.path.dirname(os.path.abspath(__file__))
+if _DIR not in sys.path:
+    sys.path.insert(0, _DIR)
+
+try:
+    from liveNetConsumer import LiveNetConsumer
+except ImportError:
+    LiveNetConsumer = None
+
+import db_core
+from command_registry import CommandRegistry
+import scanner
+import network_utils
+import ad_manager
+import hw_audit
+
+STATE_FILE = os.path.join(_DIR, "app_state.json")
+
+class BFNetAdminUI:
+    def __init__(self, root: tk.Tk):
+        self.root = root
+        self.root.title("BFNETADMIN - Enterprise IT Management Studio")
+        self.root.geometry("1060x780")
+        self.root.minsize(920, 650)
+        self.hybrid_data = None
+
+        if LiveNetConsumer:
+            self.net_consumer = LiveNetConsumer(history_len=60, sample_interval=1.0)
+            self.net_consumer.start()
+        else:
+            self.net_consumer = None
+
+        self._build_header_monitor()
+        self._build_tabs()
+        self._build_footer()
+
+        self._load_state()
+        self.apply_enterprise_theme()
+        self._schedule_traffic_refresh()
+
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _build_header_monitor(self):
+        self.header_frame = ttk.Frame(self.root)
+        self.header_frame.pack(fill=tk.X, padx=10, pady=(6, 2))
+
+        card = tk.Frame(self.header_frame, bg="#141b24", bd=1, relief="solid", highlightbackground="#2a3648", highlightthickness=1)
+        card.pack(fill=tk.X, expand=True)
+
+        lbl_box = tk.Frame(card, bg="#141b24")
+        lbl_box.pack(side=tk.LEFT, padx=12, pady=6)
+
+        title_lbl = tk.Label(lbl_box, text="GLOBAL NETWORK TRAFFIC (REAL-TIME 60s WINDOW / 1s TICK)", bg="#141b24", fg="#8b949e", font=("Segoe UI", 8, "bold"))
+        title_lbl.pack(anchor=tk.W)
+
+        row_lan = tk.Frame(lbl_box, bg="#141b24")
+        row_lan.pack(anchor=tk.W, pady=(2, 0))
+        tk.Label(row_lan, text="● LAN:", bg="#141b24", fg="#ffffff", font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT)
+        self.lbl_lan_live = tk.Label(row_lan, text="0.0 KB/s", bg="#141b24", fg="#e6edf3", font=("Segoe UI", 9))
+        self.lbl_lan_live.pack(side=tk.LEFT, padx=4)
+
+        row_wan = tk.Frame(lbl_box, bg="#141b24")
+        row_wan.pack(anchor=tk.W, pady=(2, 0))
+        tk.Label(row_wan, text="● WAN:", bg="#141b24", fg="#388bfd", font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT)
+        self.lbl_wan_live = tk.Label(row_wan, text="0.0 KB/s", bg="#141b24", fg="#e6edf3", font=("Segoe UI", 9))
+        self.lbl_wan_live.pack(side=tk.LEFT, padx=4)
+
+        self.canvas_traffic = tk.Canvas(card, height=52, bg="#16202e", highlightthickness=1, highlightbackground="#2a3648")
+        self.canvas_traffic.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=8, pady=4)
+
+    def _draw_smooth_traffic_curve(self, data: dict):
+        self.canvas_traffic.delete("all")
+        w = self.canvas_traffic.winfo_width()
+        h = self.canvas_traffic.winfo_height()
+        if w < 60 or h < 30:
+            return
+
+        lan_pts = data.get("lan_history", [0.0] * 60)
+        wan_pts = data.get("wan_history", [0.0] * 60)
+        avg_wan = data.get("wan_avg_kb", 0.0)
+        avg_lan = data.get("lan_avg_kb", 0.0)
+        peak = data.get("peak_kb", 50.0)
+
+        # Dynamic Round Scaling (1-2-5 progression)
+        target_max = peak * 1.25
+        scale = 10.0
+        while scale < target_max:
+            if scale * 2 >= target_max:
+                scale *= 2
+                break
+            if scale * 5 >= target_max:
+                scale *= 5
+                break
+            scale *= 10
+
+        # Draw Grid Background & Ticks (High Visibility)
+        steps_y = 3
+        pad_bottom = 10
+        pad_top = 10
+        plot_h = h - pad_bottom - pad_top
+
+        for step in range(steps_y + 1):
+            y_val = (scale / steps_y) * step
+            py = (h - pad_bottom) - (y_val / scale) * plot_h
+            # Grid line with brighter subtle tone
+            self.canvas_traffic.create_line(0, py, w, py, fill="#253549", dash=(2, 3))
+            if step > 0:
+                y_label = f"{y_val / 1024.0:.1f}M" if y_val >= 1024 else f"{int(y_val)}K"
+                self.canvas_traffic.create_text(w - 6, py - 6, text=y_label, anchor=tk.E, fill="#c9d1d9", font=("Consolas", 8, "bold"))
+
+        # Vertical Grid Lines (Time steps)
+        steps_x = 6
+        dx_grid = w / steps_x
+        for sx in range(1, steps_x):
+            self.canvas_traffic.create_line(sx * dx_grid, 0, sx * dx_grid, h, fill="#223042", dash=(2, 4))
+
+        # Draw Averages (LAN: White dashed | WAN: Cyan/Blue dashed)
+        if avg_wan > 0:
+            y_wan_avg = (h - pad_bottom) - (avg_wan / scale) * plot_h
+            self.canvas_traffic.create_line(0, y_wan_avg, w, y_wan_avg, fill="#58a6ff", dash=(4, 3), width=1)
+        if avg_lan > 0:
+            y_lan_avg = (h - pad_bottom) - (avg_lan / scale) * plot_h
+            self.canvas_traffic.create_line(0, y_lan_avg, w, y_lan_avg, fill="#f0f6fc", dash=(4, 3), width=1)
+
+        # Coordinate Converter
+        pts_count = len(lan_pts)
+        dx = w / max(1, pts_count - 1)
+
+        def to_coords(points):
+            coords = []
+            for idx, val in enumerate(points):
+                cx = idx * dx
+                cy = (h - pad_bottom) - (val / scale) * plot_h
+                coords.extend([cx, max(pad_top, min(h - pad_bottom, cy))])
+            return coords
+
+        wan_coords = to_coords(wan_pts)
+        lan_coords = to_coords(lan_pts)
+
+        # Plot WAN (Vibrant Blue #388bfd)
+        if len(wan_coords) >= 4:
+            self.canvas_traffic.create_line(wan_coords, fill="#388bfd", width=2, smooth=True)
+
+        # Plot LAN (Pure Crisp White #ffffff)
+        if len(lan_coords) >= 4:
+            self.canvas_traffic.create_line(lan_coords, fill="#ffffff", width=2, smooth=True)
+
+        # Live Status Legend (Clear & Bright)
+        cur_peak_str = f"Peak: {peak / 1024.0:.2f} MB/s" if peak >= 1024 else f"Peak: {peak:.1f} KB/s"
+        self.canvas_traffic.create_text(10, 8, text=cur_peak_str, anchor=tk.NW, fill="#f0f6fc", font=("Consolas", 8, "bold"))
+        self.canvas_traffic.create_text(w - 60, 8, text="LIVE 60s", anchor=tk.NE, fill="#79c0ff", font=("Segoe UI", 8, "bold"))
+    def _schedule_traffic_refresh(self):
+        if self.net_consumer:
+            snap = self.net_consumer.get_snapshot()
+            lan_val = snap.get("lan_live_kb", 0.0)
+            wan_val = snap.get("wan_live_kb", 0.0)
+
+            lan_str = f"{lan_val / 1024.0:.2f} MB/s" if lan_val >= 1024 else f"{lan_val:.1f} KB/s"
+            wan_str = f"{wan_val / 1024.0:.2f} MB/s" if wan_val >= 1024 else f"{wan_val:.1f} KB/s"
+
+            self.lbl_lan_live.config(text=lan_str)
+            self.lbl_wan_live.config(text=wan_str)
+            self._draw_smooth_traffic_curve(snap)
+
+        self.root.after(1000, self._schedule_traffic_refresh)
+
+    def _build_footer(self):
+        f_footer = tk.Frame(self.root, bg="#0b0e14", bd=0)
+        f_footer.pack(fill=tk.X, side=tk.BOTTOM, padx=10, pady=(2, 6))
+
+        lbl_dev = tk.Label(
+            f_footer,
+            text="Developer: Behzad Fartash    b.fartash@gmail.com",
+            bg="#0b0e14",
+            fg="#8b949e",
+            font=("Segoe UI", 8, "bold")
+        )
+        lbl_dev.pack(side=tk.LEFT, padx=4)
+
+        lbl_ver = tk.Label(
+            f_footer,
+            text="BFNETADMIN Enterprise Suite v2026.1",
+            bg="#0b0e14",
+            fg="#58a6ff",
+            font=("Segoe UI", 8)
+        )
+        lbl_ver.pack(side=tk.RIGHT, padx=4)
+
+    def _build_tabs(self):
+        notebook = ttk.Notebook(self.root)
+        notebook.pack(fill=tk.BOTH, expand=True, padx=8, pady=4)
+
+        self.tab_scanner = ttk.Frame(notebook)
+        self.tab_dns = ttk.Frame(notebook)
+        self.tab_booster = ttk.Frame(notebook)
+        self.tab_hardware = ttk.Frame(notebook)
+        self.tab_ad = ttk.Frame(notebook)
+
+        notebook.add(self.tab_scanner, text="  IP Scanner  ")
+        notebook.add(self.tab_dns, text="  DNS Benchmark & Hybrid  ")
+        notebook.add(self.tab_booster, text="  Internet Boost & TCP Tuning  ")
+        notebook.add(self.tab_hardware, text="  Hardware, BIOS & AI Studio  ")
+        notebook.add(self.tab_ad, text="  Active Directory & Users  ")
+
+        self._setup_scanner_tab()
+        self._setup_dns_tab()
+        self._setup_booster_tab()
+        self._setup_hardware_tab()
+        self._setup_ad_tab()
+
+    def _setup_scanner_tab(self):
+        frame_top = ttk.LabelFrame(self.tab_scanner, text=" Scan Configuration ")
+        frame_top.pack(fill=tk.X, padx=10, pady=6)
+
+        ttk.Label(frame_top, text="Start IP:").grid(row=0, column=0, padx=6, pady=6)
+        self.ent_start_ip = ttk.Entry(frame_top, width=18)
+        self.ent_start_ip.insert(0, "192.168.10.1")
+        self.ent_start_ip.grid(row=0, column=1, padx=6, pady=6)
+
+        ttk.Label(frame_top, text="End IP:").grid(row=0, column=2, padx=6, pady=6)
+        self.ent_end_ip = ttk.Entry(frame_top, width=18)
+        self.ent_end_ip.insert(0, "192.168.10.254")
+        self.ent_end_ip.grid(row=0, column=3, padx=6, pady=6)
+
+        self.btn_scan = ttk.Button(frame_top, text="Start Network Scan", command=self._start_scan)
+        self.btn_scan.grid(row=0, column=4, padx=12, pady=6)
+
+        self.tree_scan = ttk.Treeview(self.tab_scanner, columns=("ip", "hostname", "ports"), show="headings")
+        self.tree_scan.heading("ip", text="IP Address")
+        self.tree_scan.heading("hostname", text="Hostname / NetBIOS")
+        self.tree_scan.heading("ports", text="Open Ports & Status")
+        self.tree_scan.column("ip", width=150)
+        self.tree_scan.column("hostname", width=240)
+        self.tree_scan.column("ports", width=380)
+        self.tree_scan.pack(fill=tk.BOTH, expand=True, padx=10, pady=6)
+
+        self.lbl_scan_status = ttk.Label(self.tab_scanner, text="Status: Ready", relief=tk.SUNKEN, anchor=tk.W)
+        self.lbl_scan_status.pack(fill=tk.X, padx=10, pady=3)
+
+    def _setup_dns_tab(self):
+        frame_top = ttk.Frame(self.tab_dns)
+        frame_top.pack(fill=tk.X, padx=10, pady=6)
+
+        self.btn_bench_dns = ttk.Button(frame_top, text="Benchmark DNS Servers", command=self._start_dns_bench)
+        self.btn_bench_dns.pack(side=tk.LEFT, padx=5)
+
+        self.btn_apply_hybrid = ttk.Button(frame_top, text="Apply Fast Hybrid DNS to Windows", state=tk.DISABLED, command=self._apply_hybrid_dns)
+        self.btn_apply_hybrid.pack(side=tk.LEFT, padx=5)
+
+        self.frame_summary = ttk.LabelFrame(self.tab_dns, text=" Recommended Hybrid Resolver Pair ")
+        self.frame_summary.pack(fill=tk.X, padx=10, pady=6)
+
+        self.lbl_fastest_ir = ttk.Label(self.frame_summary, text="Primary IR DNS: ---", font=("Segoe UI", 9, "bold"))
+        self.lbl_fastest_ir.pack(anchor=tk.W, padx=12, pady=3)
+
+        self.lbl_fastest_global = ttk.Label(self.frame_summary, text="Secondary Global DNS: ---", font=("Segoe UI", 9, "bold"))
+        self.lbl_fastest_global.pack(anchor=tk.W, padx=12, pady=3)
+
+        self.tree_dns = ttk.Treeview(self.tab_dns, columns=("name", "ip", "type", "latency", "status"), show="headings")
+        self.tree_dns.heading("name", text="DNS Provider")
+        self.tree_dns.heading("ip", text="IP Address")
+        self.tree_dns.heading("type", text="Region / Scope")
+        self.tree_dns.heading("latency", text="Latency (ms)")
+        self.tree_dns.heading("status", text="Health")
+        self.tree_dns.column("name", width=230)
+        self.tree_dns.column("ip", width=140)
+        self.tree_dns.column("type", width=120)
+        self.tree_dns.column("latency", width=110)
+        self.tree_dns.column("status", width=90)
+        self.tree_dns.bind("<Double-1>", self.on_dns_row_double_click)
+        self.tree_dns.pack(fill=tk.BOTH, expand=True, padx=10, pady=6)
+
+        self.lbl_dns_status = ttk.Label(self.tab_dns, text="Status: Ready", relief=tk.SUNKEN, anchor=tk.W)
+        self.lbl_dns_status.pack(fill=tk.X, padx=10, pady=3)
+
+    def _setup_booster_tab(self):
+        f_top = ttk.LabelFrame(self.tab_booster, text=" Real-time Network & TCP Stack Optimization Engine ")
+        f_top.pack(fill=tk.BOTH, expand=True, padx=15, pady=15)
+
+        lbl_desc = ttk.Label(
+            f_top,
+            text="This engine tunes Windows TCP Stack parameters, corrects MTU fragmentation bottlenecks,\nenables ECN/RSS throughput offloading and purges routing caches for maximum transfer rate.",
+            font=("Segoe UI", 9)
+        )
+        lbl_desc.pack(anchor=tk.W, padx=15, pady=12)
+
+        f_status = ttk.LabelFrame(f_top, text=" Network Stack Acceleration Directives ")
+        f_status.pack(fill=tk.X, padx=15, pady=8)
+
+        targets = [
+            "✔ MTU Normalization: Forces standard 1500-byte frame payload",
+            "✔ TCP Auto-Tuning: Level=Normal (High-speed window scaling)",
+            "✔ Multi-core RSS & RSC: Hardware receive throughput offloading",
+            "✔ ECN Enabled: Explicit Congestion Notification (Zero Packet Drop)",
+            "✔ Cache Refresh: Complete DNS & ARP routing table flush"
+        ]
+
+        for t in targets:
+            ttk.Label(f_status, text=t, font=("Segoe UI", 9)).pack(anchor=tk.W, padx=12, pady=3)
+
+        f_btns = ttk.Frame(f_top)
+        f_btns.pack(fill=tk.X, padx=15, pady=18)
+
+        self.btn_boost = ttk.Button(f_btns, text="⚡ ACTIVATE INTERNET SPEED BOOST", command=self._activate_boost)
+        self.btn_boost.pack(side=tk.LEFT, padx=10, ipady=6, ipadx=10)
+
+        self.btn_restore = ttk.Button(f_btns, text="↺ Restore Default TCP Parameters", command=self._restore_defaults)
+        self.btn_restore.pack(side=tk.LEFT, padx=10, ipady=6)
+
+        self.lbl_boost_status = ttk.Label(self.tab_booster, text="Ready to optimize.", relief=tk.SUNKEN, anchor=tk.W)
+        self.lbl_boost_status.pack(fill=tk.X, padx=15, pady=6)
+
+    def _setup_ad_tab(self):
+        frame = ttk.LabelFrame(self.tab_ad, text=" Windows & Domain User Account Management ")
+        frame.pack(fill=tk.X, padx=15, pady=15)
+
+        ttk.Label(frame, text="Username:").grid(row=0, column=0, padx=8, pady=10, sticky=tk.W)
+        self.ent_ad_user = ttk.Entry(frame, width=28)
+        self.ent_ad_user.grid(row=0, column=1, padx=8, pady=10)
+
+        ttk.Label(frame, text="New Password:").grid(row=1, column=0, padx=8, pady=10, sticky=tk.W)
+        self.ent_ad_pass = ttk.Entry(frame, width=28, show="*")
+        self.ent_ad_pass.grid(row=1, column=1, padx=8, pady=10)
+
+        ttk.Button(frame, text="Reset Password", command=self._reset_ad_pass).grid(row=2, column=1, pady=12, sticky=tk.E)
+
+    def _activate_boost(self):
+        self.btn_boost.config(state=tk.DISABLED)
+        self.lbl_boost_status.config(text="Applying TCP/MTU optimizations with Elevated Privileges...")
+
+        def runner():
+            res = CommandRegistry.dispatch_from_dict({"action": "BOOST_INTERNET_SPEED"})
+            def finalize():
+                self.btn_boost.config(state=tk.NORMAL)
+                if res.get("status") == "success":
+                    self.lbl_boost_status.config(text="Optimizations successfully applied!")
+                    messagebox.showinfo("Speed Boost Activated", res.get("message", "Optimized."))
+                else:
+                    self.lbl_boost_status.config(text="Optimization failed.")
+                    messagebox.showerror("Error", res.get("message", "Failed."))
+            self.root.after(0, finalize)
+
+        threading.Thread(target=runner, daemon=True).start()
+
+    def _restore_defaults(self):
+        self.lbl_boost_status.config(text="Restoring defaults...")
+        res = CommandRegistry.dispatch_from_dict({"action": "RESTORE_DEFAULT_NETWORK"})
+        if res.get("status") == "success":
+            self.lbl_boost_status.config(text="Defaults restored.")
+            messagebox.showinfo("Restored", res.get("message", "Defaults restored."))
+        else:
+            messagebox.showerror("Error", res.get("message", "Failed."))
+
+    def _load_state(self):
+        if os.path.exists(STATE_FILE):
+            try:
+                with open(STATE_FILE, "r", encoding="utf-8") as f:
+                    st = json.load(f)
+                    self.ent_start_ip.delete(0, tk.END)
+                    self.ent_start_ip.insert(0, st.get("start_ip", "192.168.10.1"))
+                    self.ent_end_ip.delete(0, tk.END)
+                    self.ent_end_ip.insert(0, st.get("end_ip", "192.168.10.254"))
+                    self.ent_ad_user.delete(0, tk.END)
+                    self.ent_ad_user.insert(0, st.get("username", ""))
+            except Exception:
+                pass
+
+    def _save_state(self):
+        st = {
+            "start_ip": self.ent_start_ip.get().strip(),
+            "end_ip": self.ent_end_ip.get().strip(),
+            "username": self.ent_ad_user.get().strip()
+        }
+        try:
+            with open(STATE_FILE, "w", encoding="utf-8") as f:
+                json.dump(st, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    def _on_close(self):
+        if self.net_consumer:
+            self.net_consumer.stop()
+        self._save_state()
+        self.root.destroy()
+
+    def _start_scan(self):
+        self._save_state()
+        self.btn_scan.config(state=tk.DISABLED)
+        for row in self.tree_scan.get_children():
+            self.tree_scan.delete(row)
+
+        def runner():
+            def cb(c, t, msg):
+                self.root.after(0, lambda: self.lbl_scan_status.config(text=f"[{c}/{t}] {msg}"))
+
+            res = CommandRegistry.dispatch_from_dict({
+                "action": "SCAN_IP_RANGE",
+                "params": {"start_ip": self.ent_start_ip.get().strip(), "end_ip": self.ent_end_ip.get().strip()}
+            }, progress_cb=cb)
+
+            def finalize():
+                self.btn_scan.config(state=tk.NORMAL)
+                if res.get("status") == "success":
+                    for host in res.get("data", []):
+                        self.tree_scan.insert("", tk.END, values=(host.get("ip"), host.get("hostname"), host.get("ports")))
+                    self.lbl_scan_status.config(text=res.get("message", "Done."))
+                else:
+                    messagebox.showerror("Error", res.get("message", "Scan failed."))
+            self.root.after(0, finalize)
+
+        threading.Thread(target=runner, daemon=True).start()
+
+    def _start_dns_bench(self):
+        self.btn_bench_dns.config(state=tk.DISABLED)
+        self.btn_apply_hybrid.config(state=tk.DISABLED)
+        for row in self.tree_dns.get_children():
+            self.tree_dns.delete(row)
+
+        def runner():
+            def cb(c, t, msg):
+                self.root.after(0, lambda: self.lbl_dns_status.config(text=f"[{c}/{t}] {msg}"))
+
+            res = CommandRegistry.dispatch_from_dict({"action": "BENCHMARK_DNS"}, progress_cb=cb)
+
+            def finalize():
+                self.btn_bench_dns.config(state=tk.NORMAL)
+                if res.get("status") == "success":
+                    data = res.get("data", {})
+                    for s in data.get("servers", []):
+                        lat_str = f"{s['latency_ms']:.1f}" if s.get("status") == "UP" else "Timeout"
+                        self.tree_dns.insert("", tk.END, values=(s.get("name"), s.get("ip"), s.get("type"), lat_str, s.get("status")))
+
+                    self.hybrid_data = data.get("hybrid_pair")
+                    fast_ir = data.get("fastest_ir")
+                    fast_gl = data.get("fastest_global")
+
+                    if fast_ir:
+                        self.lbl_fastest_ir.config(text=f"🇮🇷 Primary (IR): {fast_ir['name']} [{fast_ir['ip']}] — Latency: {fast_ir['latency_ms']:.1f} ms")
+                    if fast_gl:
+                        self.lbl_fastest_global.config(text=f"🌐 Secondary (Global): {fast_gl['name']} [{fast_gl['ip']}] — Latency: {fast_gl['latency_ms']:.1f} ms")
+
+                    if self.hybrid_data:
+                        self.btn_apply_hybrid.config(state=tk.NORMAL)
+                        self.add_hybrid_dns_row(self.hybrid_data)
+                        self.lbl_dns_status.config(text=f"Ready. Recommended: {self.hybrid_data['name']} (Avg: {self.hybrid_data['avg_latency']} ms)")
+                    else:
+                        self.lbl_dns_status.config(text="Benchmark complete.")
+                else:
+                    messagebox.showerror("Error", res.get("message", "Benchmark failed."))
+            self.root.after(0, finalize)
+
+        threading.Thread(target=runner, daemon=True).start()
+
+    def _apply_hybrid_dns(self):
+        if not self.hybrid_data:
+            return
+        self.apply_dns_pair(self.hybrid_data["primary_ip"], self.hybrid_data["alternate_ip"])
+
+    def _reset_ad_pass(self):
+        self._save_state()
+        u = self.ent_ad_user.get().strip()
+        GAPGPTMASKTOKEN7j1dfwh3j2mX0X = self.ent_ad_pass.get().strip()
+        if not u or not GAPGPTMASKTOKEN7j1dfwh3j2mX1X:
+            messagebox.showwarning("Input", "Please provide both Username and Password.")
+            return
+
+        res = CommandRegistry.dispatch_from_dict({
+            "action": "RESET_PASSWORD",
+            "params": {"username": u, "password": GAPGPTMASKTOKEN7j1dfwh3j2mX2X}
+        })
+        if res.get("status") == "success":
+            messagebox.showinfo("Success", res.get("message", "Password updated."))
+            self.ent_ad_pass.delete(0, tk.END)
+        else:
+            messagebox.showerror("Error", res.get("message", "Failed to reset password."))
+
+    def apply_enterprise_theme(self):
+        c_bg = "#0f141c"
+        c_card = "#18202c"
+        c_border = "#2a3648"
+        c_text = "#e6edf3"
+        c_muted = "#8b949e"
+        c_accent = "#388bfd"
+        c_entry = "#0b0e14"
+
+        try:
+            self.root.configure(bg=c_bg)
+        except Exception:
+            pass
+
+        style = ttk.Style()
+        if "clam" in style.theme_names():
+            style.theme_use("clam")
+
+        style.configure(".", background=c_bg, foreground=c_text, font=("Segoe UI", 9))
+        style.configure("TFrame", background=c_bg)
+        style.configure("TLabelframe", background=c_bg, bordercolor=c_border)
+        style.configure("TLabelframe.Label", background=c_bg, foreground=c_accent, font=("Segoe UI", 9, "bold"))
+        style.configure("TLabel", background=c_bg, foreground=c_text, font=("Segoe UI", 9))
+
+        style.configure("TButton", background=c_card, foreground="#ffffff", bordercolor=c_border, font=("Segoe UI", 9, "bold"), padding=[10, 4])
+        style.map("TButton", background=[("active", c_accent), ("pressed", "#1f6feb")], foreground=[("active", "#ffffff")])
+
+        style.configure("TNotebook", background=c_bg, borderwidth=0)
+        style.configure("TNotebook.Tab", background=c_card, foreground=c_muted, bordercolor=c_border, padding=[14, 6], font=("Segoe UI", 9, "bold"))
+        style.map("TNotebook.Tab", background=[("selected", c_bg)], foreground=[("selected", "#58a6ff")])
+
+        style.configure("Treeview", background=c_entry, foreground=c_text, fieldbackground=c_entry, bordercolor=c_border, rowheight=26, font=("Segoe UI", 9))
+        style.configure("Treeview.Heading", background=c_card, foreground="#58a6ff", relief="flat", font=("Segoe UI", 9, "bold"))
+        style.map("Treeview", background=[("selected", "#1f3b5c")], foreground=[("selected", "#ffffff")])
+
+        style.configure("TEntry", fieldbackground=c_entry, foreground="#ffffff", insertcolor="#58a6ff")
+
+        def _apply_recursive(w):
+            try:
+                cls_name = w.winfo_class()
+                if cls_name in ("Entry", "Text"):
+                    w.configure(bg=c_entry, fg="#ffffff", insertbackground="#58a6ff", relief="solid", bd=1)
+                elif cls_name in ("Label", "Frame", "LabelFrame"):
+                    w.configure(bg=c_bg)
+                elif cls_name == "Button":
+                    w.configure(bg=c_card, fg="#ffffff", activebackground=c_accent, activeforeground="#ffffff")
+                elif cls_name == "Listbox":
+                    w.configure(bg=c_entry, fg=c_text, selectbackground=c_accent)
+            except Exception:
+                pass
+            for child in w.winfo_children():
+                _apply_recursive(child)
+
+        try:
+            self.root.update_idletasks()
+            _apply_recursive(self.root)
+        except Exception:
+            pass
+
+    def apply_dns_pair(self, primary_dns, secondary_dns=None):
+        res = CommandRegistry.dispatch_from_dict({
+            "action": "SET_OS_DNS",
+            "params": {"primary_ip": primary_dns, "alternate_ip": secondary_dns}
+        })
+        if res.get("status") == "success":
+            adapter = res.get("data", {}).get("interface", "Network Adapter")
+            msg = f"DNS Configuration Successfully Applied to [{adapter}]:\n\n"
+            msg += f"1. Primary DNS (IR):       {primary_dns}\n"
+            if secondary_dns:
+                msg += f"2. Secondary DNS (Global): {secondary_dns}\n\n"
+            msg += "DNS Cache flushed (ipconfig /flushdns)."
+            messagebox.showinfo("DNS Applied", msg)
+        else:
+            messagebox.showerror("Error", f"Failed to set DNS.\n{res.get('message', 'Unknown error')}")
+
+    def on_dns_row_double_click(self, event):
+        item_id = self.tree_dns.focus()
+        if not item_id:
+            return
+        row = self.tree_dns.item(item_id)["values"]
+        if not row:
+            return
+        ip_field = str(row[1])
+        if " + " in ip_field:
+            p_dns, s_dns = [x.strip() for x in ip_field.split("+")]
+            self.apply_dns_pair(p_dns, s_dns)
+        else:
+            self.apply_dns_pair(ip_field)
+
+    def add_hybrid_dns_row(self, hybrid_pair):
+        combined_name = f"⚡ HYBRID: {hybrid_pair['name']}"
+        combined_ip = f"{hybrid_pair['primary_ip']} + {hybrid_pair['alternate_ip']}"
+        combined_lat = f"{hybrid_pair['avg_latency']} ms (Avg)"
+        item = self.tree_dns.insert("", 0, values=(combined_name, combined_ip, "Hybrid (IR+Global)", combined_lat, "UP"))
+        self.tree_dns.selection_set(item)
+
+    def _setup_hardware_tab(self):
+        top_bar = ttk.Frame(self.tab_hardware)
+        top_bar.pack(fill=tk.X, padx=10, pady=8)
+
+        btn_refresh = ttk.Button(top_bar, text="🔍 Full Deep Hardware & BIOS Audit", command=self._trigger_hw_audit)
+        btn_refresh.pack(side=tk.LEFT, padx=5, ipady=4)
+
+        btn_sync_time = ttk.Button(top_bar, text="⏱ Sync System & BIOS RTC Clock", command=self._sync_hw_clock)
+        btn_sync_time.pack(side=tk.LEFT, padx=5, ipady=4)
+
+        self.lbl_hw_status = ttk.Label(top_bar, text="Status: Ready to inspect hardware.", foreground="#8b949e")
+        self.lbl_hw_status.pack(side=tk.LEFT, padx=15)
+
+        f_gauges = ttk.LabelFrame(self.tab_hardware, text=" System Performance & Hardware Metrics ")
+        f_gauges.pack(fill=tk.X, padx=10, pady=4)
+
+        gauge_container = ttk.Frame(f_gauges)
+        gauge_container.pack(fill=tk.X, padx=5, pady=6)
+
+        f_g1 = ttk.Frame(gauge_container)
+        f_g1.pack(side=tk.LEFT, expand=True, fill=tk.BOTH, padx=8)
+        self.canvas_gauge_ai = tk.Canvas(f_g1, width=150, height=85, bg="#0f141c", highlightthickness=0)
+        self.canvas_gauge_ai.pack()
+        self.lbl_gauge_ai_desc = ttk.Label(f_g1, text="AI Capability: ---", font=("Segoe UI", 9, "bold"))
+        self.lbl_gauge_ai_desc.pack()
+
+        f_g2 = ttk.Frame(gauge_container)
+        f_g2.pack(side=tk.LEFT, expand=True, fill=tk.BOTH, padx=8)
+        self.canvas_gauge_cpu = tk.Canvas(f_g2, width=150, height=85, bg="#0f141c", highlightthickness=0)
+        self.canvas_gauge_cpu.pack()
+        self.lbl_gauge_cpu_desc = ttk.Label(f_g2, text="CPU Bench: ---", font=("Segoe UI", 9, "bold"))
+        self.lbl_gauge_cpu_desc.pack()
+
+        f_g3 = ttk.Frame(gauge_container)
+        f_g3.pack(side=tk.LEFT, expand=True, fill=tk.BOTH, padx=8)
+        self.canvas_gauge_ram = tk.Canvas(f_g3, width=150, height=85, bg="#0f141c", highlightthickness=0)
+        self.canvas_gauge_ram.pack()
+        self.lbl_gauge_ram_desc = ttk.Label(f_g3, text="Total RAM: ---", font=("Segoe UI", 9, "bold"))
+        self.lbl_gauge_ram_desc.pack()
+
+        self._draw_gauge(self.canvas_gauge_ai, 0, "AI Score")
+        self._draw_gauge(self.canvas_gauge_cpu, 0, "CPU Bench")
+        self._draw_gauge(self.canvas_gauge_ram, 0, "RAM Size")
+
+        sub_nb = ttk.Notebook(self.tab_hardware)
+        sub_nb.pack(fill=tk.BOTH, expand=True, padx=10, pady=6)
+
+        sub_ai = ttk.Frame(sub_nb)
+        sub_nb.add(sub_ai, text="  🤖 AI Local Models Assessment  ")
+        self.txt_ai_details = tk.Text(sub_ai, height=12, bg="#0b0e14", fg="#58a6ff", insertbackground="#58a6ff", font=("Consolas", 10), wrap="word")
+        self.txt_ai_details.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
+        self.txt_ai_details.insert(tk.END, "Click 'Full Deep Hardware & BIOS Audit' to calculate AI readiness matrix.\n")
+
+        sub_bios = ttk.Frame(sub_nb)
+        sub_nb.add(sub_bios, text="  🏛 Motherboard & SMBIOS  ")
+        self.tree_bios = ttk.Treeview(sub_bios, columns=("prop", "val"), show="headings")
+        self.tree_bios.heading("prop", text="Hardware Property")
+        self.tree_bios.heading("val", text="Detected Value")
+        self.tree_bios.column("prop", width=260)
+        self.tree_bios.column("val", width=550)
+        self.tree_bios.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
+
+        sub_components = ttk.Frame(sub_nb)
+        sub_nb.add(sub_components, text="  ⚙ CPU, RAM & Storage  ")
+        self.tree_components = ttk.Treeview(sub_components, columns=("cat", "name", "detail"), show="headings")
+        self.tree_components.heading("cat", text="Category")
+        self.tree_components.heading("name", text="Component / Model")
+        self.tree_components.heading("detail", text="Capacity / Specifications")
+        self.tree_components.column("cat", width=130)
+        self.tree_components.column("name", width=360)
+        self.tree_components.column("detail", width=330)
+        self.tree_components.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
+
+        sub_ports = ttk.Frame(sub_nb)
+        sub_nb.add(sub_ports, text="  🔌 Ports, USB & Network  ")
+        self.tree_ports = ttk.Treeview(sub_ports, columns=("type", "device", "identity"), show="headings")
+        self.tree_ports.heading("type", text="Interface")
+        self.tree_ports.heading("device", text="Device Description")
+        self.tree_ports.heading("identity", text="Identifier / MAC / Serial")
+        self.tree_ports.column("type", width=130)
+        self.tree_ports.column("device", width=400)
+        self.tree_ports.column("identity", width=290)
+        self.tree_ports.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
+
+    def _draw_gauge(self, canvas: tk.Canvas, percent: float, label: str):
+        canvas.delete("all")
+        w, h = 150, 85
+        cx, cy, r = w / 2, h - 12, 58
+        canvas.create_arc(cx - r, cy - r, cx + r, cy + r, start=0, extent=180, outline="#2a3648", width=10, style="arc")
+        val = min(100.0, max(0.0, float(percent)))
+        extent = -180.0 * (val / 100.0)
+
+        if val >= 70:
+            color = "#2ea043"
+        elif val >= 35:
+            color = "#388bfd"
+        else:
+            color = "#d29922"
+
+        if extent != 0:
+            canvas.create_arc(cx - r, cy - r, cx + r, cy + r, start=180, extent=extent, outline=color, width=10, style="arc")
+        canvas.create_text(cx, cy - 20, text=f"{int(val)}%", fill="#ffffff", font=("Segoe UI", 13, "bold"))
+        canvas.create_text(cx, cy + 2, text=label, fill="#8b949e", font=("Segoe UI", 8))
+
+    def _trigger_hw_audit(self):
+        self.lbl_hw_status.config(text="Status: Inspecting hardware registers & running benchmarks...")
+        for t in [self.tree_bios, self.tree_components, self.tree_ports]:
+            for row in t.get_children():
+                t.delete(row)
+        self.txt_ai_details.delete("1.0", tk.END)
+
+        def runner():
+            def cb(c, t, msg):
+                self.root.after(0, lambda: self.lbl_hw_status.config(text=f"[{c}/{t}] {msg}"))
+            res = CommandRegistry.dispatch_from_dict({"action": "GET_HARDWARE_INTELLIGENCE"}, progress_cb=cb)
+            def finalize():
+                if res.get("status") == "success":
+                    self._populate_hw_ui(res.get("data", {}))
+                    self.lbl_hw_status.config(text="Status: Hardware audit complete.")
+                else:
+                    self.lbl_hw_status.config(text="Status: Audit failed.")
+                    messagebox.showerror("Error", res.get("message", "Hardware audit failed."))
+            self.root.after(0, finalize)
+        threading.Thread(target=runner, daemon=True).start()
+
+    def _sync_hw_clock(self):
+        self.lbl_hw_status.config(text="Status: Synchronizing System & RTC hardware clock...")
+        def runner():
+            res = CommandRegistry.dispatch_from_dict({"action": "SYNC_HARDWARE_CLOCK"})
+            def finalize():
+                if res.get("status") == "success":
+                    self.lbl_hw_status.config(text="Status: Hardware RTC & NTP time synced successfully.")
+                    messagebox.showinfo("Time Sync", res.get("message", "Time synchronized."))
+                else:
+                    self.lbl_hw_status.config(text="Status: Time sync failed.")
+                    messagebox.showerror("Error", res.get("message", "Failed to sync time."))
+            self.root.after(0, finalize)
+        threading.Thread(target=runner, daemon=True).start()
+
+    def _populate_hw_ui(self, data: dict):
+        bios = data.get("bios", {})
+        board = data.get("board", {})
+        comp = data.get("computer", {})
+        os_info = data.get("os", {})
+        cpu = data.get("cpu", {})
+        storage = data.get("storage", {})
+        gpus = data.get("gpus", [])
+        metrics = data.get("metrics", {})
+        ai = metrics.get("ai_readiness", {})
+        bench = metrics.get("benchmark", {})
+
+        ai_score = ai.get("score", 0)
+        self._draw_gauge(self.canvas_gauge_ai, ai_score, "AI Score")
+        self.lbl_gauge_ai_desc.config(text=f"AI Tier: {ai.get('tier', 'N/A')} ({ai_score}/100)")
+
+        multi_pts = bench.get("multi_thread_score", 0)
+        cpu_bench_norm = min(100.0, (multi_pts / 3500.0) * 100.0)
+        self._draw_gauge(self.canvas_gauge_cpu, cpu_bench_norm, "CPU Bench")
+        self.lbl_gauge_cpu_desc.config(text=f"CPU: {multi_pts} pts ({bench.get('threads_tested', 1)} Threads)")
+
+        ram_gb = metrics.get("total_ram_gb", 0)
+        ram_norm = min(100.0, (ram_gb / 64.0) * 100.0)
+        self._draw_gauge(self.canvas_gauge_ram, ram_norm, "RAM Size")
+        self.lbl_gauge_ram_desc.config(text=f"Total RAM: {ram_gb} GB")
+
+        self.txt_ai_details.delete("1.0", tk.END)
+        self.txt_ai_details.insert(tk.END, "=" * 85 + "\n")
+        self.txt_ai_details.insert(tk.END, "  BFNETADMIN ENTERPRISE AI WORKLOAD & LOCAL LLM READINESS REPORT\n")
+        self.txt_ai_details.insert(tk.END, "=" * 85 + "\n\n")
+        self.txt_ai_details.insert(tk.END, f"• Overall AI Readiness Tier:  {ai.get('tier')}\n")
+        self.txt_ai_details.insert(tk.END, f"• AI Architecture Score:      {ai.get('score')} / 100\n")
+        self.txt_ai_details.insert(tk.END, f"• Maximum GPU VRAM Detected: {metrics.get('max_gpu_vram_gb', 0)} GB\n")
+        self.txt_ai_details.insert(tk.END, f"• Total System Memory (RAM): {metrics.get('total_ram_gb', 0)} GB\n")
+        self.txt_ai_details.insert(tk.END, f"• CPU Benchmark Throughput:   Single-Core: {bench.get('single_thread_score')} pts | Multi-Core: {bench.get('multi_thread_score')} pts\n\n")
+
+        self.txt_ai_details.insert(tk.END, "Key Hardware Assessment Findings:\n")
+        for n in ai.get("notes", []):
+            self.txt_ai_details.insert(tk.END, f"  * {n}\n")
+        self.txt_ai_details.insert(tk.END, "\n" + "-" * 85 + "\n")
+        self.txt_ai_details.insert(tk.END, "Supported Local AI Architectures Matrix (Ollama / Llama.cpp / vLLM):\n")
+        self.txt_ai_details.insert(tk.END, "-" * 85 + "\n")
+
+        for m in ai.get("models_matrix", []):
+            status_icon = "✔ SUPPORTED" if m.get("supported") else "✖ OOM (Constrained)"
+            self.txt_ai_details.insert(tk.END, f" {status_icon:<18} | {m.get('model'):<26} | VRAM: {m.get('req_vram_gb'):>2} GB | RAM: {m.get('req_ram_gb'):>2} GB | Speed: {m.get('est_speed')}\n")
+
+        bios_items = [
+            ("BIOS Manufacturer / Vendor", bios.get("Manufacturer")),
+            ("BIOS Name / Release", bios.get("Name")),
+            ("BIOS Version", bios.get("Version")),
+            ("BIOS Release Date", bios.get("ReleaseDate")),
+            ("SMBIOS BIOS Version", bios.get("SMBIOSBIOSVersion")),
+            ("Motherboard Manufacturer", board.get("Manufacturer")),
+            ("Motherboard Product / Model", board.get("Product")),
+            ("Motherboard Serial Number", board.get("SerialNumber")),
+            ("Motherboard Version", board.get("Version")),
+            ("Computer System Model", f"{comp.get('Manufacturer', '')} {comp.get('Model', '')}".strip()),
+            ("Operating System", f"{os_info.get('Caption')} (Build: {os_info.get('BuildNumber')})"),
+            ("OS Architecture", os_info.get('OSArchitecture')),
+        ]
+        for k, v in bios_items:
+            if v and str(v).strip():
+                self.tree_bios.insert("", tk.END, values=(k, str(v).strip()))
+
+        self.tree_components.insert("", tk.END, values=("Processor (CPU)", cpu.get("Name", "Unknown CPU"), f"{cpu.get('NumberOfCores')} Cores / {cpu.get('NumberOfLogicalProcessors')} Threads @ {cpu.get('MaxClockSpeed')} MHz"))
+        for ram in data.get("ram_modules", []):
+            if isinstance(ram, dict):
+                self.tree_components.insert("", tk.END, values=("RAM Module", f"{ram.get('Manufacturer', 'Generic')} ({ram.get('DeviceLocator', 'Slot')})", f"{ram.get('Capacity_GB', 0)} GB @ {ram.get('Speed', 'N/A')} MHz ({ram.get('PartNumber', '').strip()})"))
+        for d in data.get("physical_drives", []):
+            if isinstance(d, dict):
+                self.tree_components.insert("", tk.END, values=("Physical Storage", f"{d.get('Model')} ({d.get('MediaType', 'Drive')})", f"{d.get('Size_GB', 0)} GB [Interface: {d.get('InterfaceType', 'N/A')}]"))
+        for g in gpus:
+            if isinstance(g, dict):
+                self.tree_components.insert("", tk.END, values=("Display / GPU", g.get("Name"), f"VRAM: {g.get('VRAM_GB', 0)} GB | Driver: {g.get('DriverVersion')}"))
+
+        for n in data.get("network_adapters", []):
+            if isinstance(n, dict):
+                self.tree_ports.insert("", tk.END, values=("Network Adapter", n.get("Name"), f"MAC: {n.get('MACAddress', 'N/A')} [Speed: {n.get('Speed_Mbps', 0)} Mbps]"))
+        for u in data.get("usb_devices", []):
+            if isinstance(u, dict):
+                self.tree_ports.insert("", tk.END, values=("USB Device", u.get("Name"), u.get("DeviceID", "N/A")))
+
+def main():
+    root = tk.Tk()
+    app = BFNetAdminUI(root)
+    root.mainloop()
+
+if __name__ == "__main__":
+    main()

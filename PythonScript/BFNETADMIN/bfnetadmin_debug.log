@@ -1,0 +1,57 @@
+2026-10-04 13:15:17 [INFO] [PID:12140] - BFNETADMIN Startup Initialized.
+2026-10-04 13:15:17 [INFO] [PID:12140] - App Path: D:\BehzadData\Projects\BFNETADMIN
+2026-10-04 13:15:17 [INFO] [PID:12140] - Building GUI Window...
+2026-10-04 13:15:17 [INFO] [PID:12140] - SQLite initialized at: D:\BehzadData\Projects\BFNETADMIN\bfnetadmin_core.db
+2026-10-04 13:15:17 [INFO] [PID:12140] - Entering mainloop.
+2026-10-04 15:19:06 [INFO] [PID:14208] - Initializing UI...
+2026-10-04 15:19:06 [INFO] [PID:14208] - SQLite initialized at: D:\BehzadData\Projects\PythonScript\BFNETADMIN\bfnetadmin_core.db
+2026-10-04 15:19:06 [INFO] [PID:14208] - Entering UI mainloop.
+2026-10-04 15:19:14 [ERROR] [PID:14208] - Failed to insert telemetry record.
+Traceback (most recent call last):
+  File "D:\BehzadData\Projects\PythonScript\BFNETADMIN\bfnetadmin_engine.py", line 95, in log_event
+    cursor.execute(
+    ~~~~~~~~~~~~~~^
+        "INSERT INTO telemetry (event_type, target, details) VALUES (?, ?, ?);",
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        (event_type, target, details)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+sqlite3.OperationalError: table telemetry has no column named target
+2026-10-04 15:19:25 [ERROR] [PID:14208] - Failed to insert telemetry record.
+Traceback (most recent call last):
+  File "D:\BehzadData\Projects\PythonScript\BFNETADMIN\bfnetadmin_engine.py", line 95, in log_event
+    cursor.execute(
+    ~~~~~~~~~~~~~~^
+        "INSERT INTO telemetry (event_type, target, details) VALUES (?, ?, ?);",
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        (event_type, target, details)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+sqlite3.OperationalError: table telemetry has no column named target
+2026-10-04 15:19:27 [ERROR] [PID:14208] - Failed to insert telemetry record.
+Traceback (most recent call last):
+  File "D:\BehzadData\Projects\PythonScript\BFNETADMIN\bfnetadmin_engine.py", line 95, in log_event
+    cursor.execute(
+    ~~~~~~~~~~~~~~^
+        "INSERT INTO telemetry (event_type, target, details) VALUES (?, ?, ?);",
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        (event_type, target, details)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+sqlite3.OperationalError: table telemetry has no column named target
+2026-10-04 15:22:26 [INFO] [PID:12868] - SQLite initialized at: D:\BehzadData\Projects\PythonScript\BFNETADMIN\bfnetadmin_core.db
+2026-10-04 15:22:52 [ERROR] [PID:12868] - Failed to insert telemetry record.
+Traceback (most recent call last):
+  File "D:\BehzadData\Projects\PythonScript\BFNETADMIN\bfnetadmin_engine.py", line 93, in log_event
+    cursor.execute(
+    ~~~~~~~~~~~~~~^
+        "INSERT INTO telemetry (event_type, target, details) VALUES (?, ?, ?);",
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        (event_type, target, details)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+sqlite3.OperationalError: table telemetry has no column named target

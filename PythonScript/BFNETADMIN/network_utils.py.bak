@@ -1,0 +1,257 @@
+# -*- coding: utf-8 -*-
+"""BFNETADMIN - Network & DNS Benchmark Toolset (50 DNS Servers) + Internet Boost Engine"""
+import os
+import sys
+import time
+import socket
+import ctypes
+import subprocess
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, Callable, Dict, List, Optional
+
+_DIR = os.path.dirname(os.path.abspath(__file__))
+if _DIR not in sys.path:
+    sys.path.insert(0, _DIR)
+
+from base_command import BaseCommand
+from command_registry import CommandRegistry
+import db_core
+
+DNS_SERVERS = [
+    # Iran / Anti-Sanction (25)
+    {"ip": "178.22.122.100", "name": "Shecan 1 (IR)", "type": "IR"},
+    {"ip": "185.51.200.2",   "name": "Shecan 2 (IR)", "type": "IR"},
+    {"ip": "10.202.10.202",  "name": "Radar Game 1 (IR)", "type": "IR"},
+    {"ip": "10.202.10.102",  "name": "Radar Game 2 (IR)", "type": "IR"},
+    {"ip": "10.202.10.10",   "name": "Radar Game 3 (IR)", "type": "IR"},
+    {"ip": "10.202.10.11",   "name": "Radar Game 4 (IR)", "type": "IR"},
+    {"ip": "78.157.42.100",  "name": "Electro 1 (IR)", "type": "IR"},
+    {"ip": "78.157.42.101",  "name": "Electro 2 (IR)", "type": "IR"},
+    {"ip": "185.106.126.6",  "name": "403 Online 1 (IR)", "type": "IR"},
+    {"ip": "185.106.126.7",  "name": "403 Online 2 (IR)", "type": "IR"},
+    {"ip": "185.55.226.26",  "name": "Begzar 1 (IR)", "type": "IR"},
+    {"ip": "185.55.225.25",  "name": "Begzar 2 (IR)", "type": "IR"},
+    {"ip": "5.202.100.100",  "name": "HostIran 1 (IR)", "type": "IR"},
+    {"ip": "5.202.100.101",  "name": "HostIran 2 (IR)", "type": "IR"},
+    {"ip": "80.253.145.218", "name": "Shatel 1 (IR)", "type": "IR"},
+    {"ip": "80.253.145.219", "name": "Shatel 2 (IR)", "type": "IR"},
+    {"ip": "91.99.101.12",   "name": "ParsOnline 1 (IR)", "type": "IR"},
+    {"ip": "91.99.101.13",   "name": "ParsOnline 2 (IR)", "type": "IR"},
+    {"ip": "194.225.70.10",  "name": "DCI / TIC 1 (IR)", "type": "IR"},
+    {"ip": "194.225.70.11",  "name": "DCI / TIC 2 (IR)", "type": "IR"},
+    {"ip": "89.165.0.1",     "name": "Asiatech 1 (IR)", "type": "IR"},
+    {"ip": "89.165.0.2",     "name": "Asiatech 2 (IR)", "type": "IR"},
+    {"ip": "217.218.127.127","name": "MCI / TCI (IR)", "type": "IR"},
+    {"ip": "217.218.155.155","name": "ITC National (IR)", "type": "IR"},
+    {"ip": "5.144.130.36",   "name": "MCCI DNS (IR)", "type": "IR"},
+
+    # International (25)
+    {"ip": "1.1.1.1",         "name": "Cloudflare Main (INT)", "type": "INT"},
+    {"ip": "1.0.0.1",         "name": "Cloudflare Sec (INT)", "type": "INT"},
+    {"ip": "8.8.8.8",         "name": "Google Main (INT)", "type": "INT"},
+    {"ip": "8.8.4.4",         "name": "Google Sec (INT)", "type": "INT"},
+    {"ip": "9.9.9.9",         "name": "Quad9 Security (INT)", "type": "INT"},
+    {"ip": "149.112.112.112", "name": "Quad9 Alternate (INT)", "type": "INT"},
+    {"ip": "208.67.222.222",   "name": "OpenDNS Home (INT)", "type": "INT"},
+    {"ip": "208.67.220.220",   "name": "OpenDNS Fam (INT)", "type": "INT"},
+    {"ip": "94.140.14.14",    "name": "AdGuard Default (INT)", "type": "INT"},
+    {"ip": "94.140.15.15",    "name": "AdGuard Sec (INT)", "type": "INT"},
+    {"ip": "185.228.168.9",   "name": "CleanBrowsing (INT)", "type": "INT"},
+    {"ip": "185.228.169.9",   "name": "CleanBrowsing Alt (INT)", "type": "INT"},
+    {"ip": "76.76.2.0",       "name": "Control D (INT)", "type": "INT"},
+    {"ip": "76.76.10.0",      "name": "Control D Alt (INT)", "type": "INT"},
+    {"ip": "64.6.65.6",       "name": "Verisign 2 (INT)", "type": "INT"},
+    {"ip": "8.26.56.26",      "name": "Comodo Secure (INT)", "type": "INT"},
+    {"ip": "8.20.247.20",     "name": "Comodo Alt (INT)", "type": "INT"},
+    {"ip": "77.88.8.8",       "name": "Yandex Basic 1 (INT)", "type": "INT"},
+    {"ip": "77.88.8.1",       "name": "Yandex Basic 2 (INT)", "type": "INT"},
+    {"ip": "195.46.39.39",    "name": "SafeDNS 1 (INT)", "type": "INT"},
+    {"ip": "195.46.39.40",    "name": "SafeDNS 2 (INT)", "type": "INT"},
+    {"ip": "4.2.2.1",         "name": "Level3 Core 1 (INT)", "type": "INT"},
+    {"ip": "4.2.2.2",         "name": "Level3 Core 2 (INT)", "type": "INT"},
+    {"ip": "4.2.2.4",         "name": "Level3 Core 4 (INT)", "type": "INT"}
+]
+
+def ping_dns_server(ip: str, timeout_sec: float = 1.0) -> Optional[float]:
+    start = time.perf_counter()
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.settimeout(timeout_sec)
+    try:
+        query = (
+            b"\xaa\xbb\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00"
+            b"\x06\x67\x6f\x6f\x67\x6c\x65\x03\x63\x6f\x6d\x00\x00\x01\x00\x01"
+        )
+        sock.sendto(query, (ip, 53))
+        _, _ = sock.recvfrom(512)
+        latency = (time.perf_counter() - start) * 1000.0
+        return round(latency, 2)
+    except Exception:
+        return None
+    finally:
+        sock.close()
+
+def get_active_interface_name() -> str:
+    try:
+        out = subprocess.check_output(
+            ["powershell", "-NoProfile", "-Command", "Get-NetAdapter | Where-Object { $_.Status -eq 'Up' } | Select-Object -ExpandProperty Name -First 1"],
+            text=True, stderr=subprocess.DEVNULL
+        ).strip()
+        return out if out else "Ethernet"
+    except Exception:
+        return "Ethernet"
+
+def execute_elevated_command(cmd_str: str) -> bool:
+    try:
+        ret = ctypes.windll.shell32.ShellExecuteW(None, "runas", "cmd.exe", f"/c {cmd_str}", None, 0)
+        return ret > 32
+    except Exception:
+        return False
+
+@CommandRegistry.register("BENCHMARK_DNS")
+class BenchmarkDnsCommand(BaseCommand):
+    def __init__(self, action_name: str = "BENCHMARK_DNS", params: Optional[Dict[str, Any]] = None):
+        super().__init__(action_name=action_name, params=params)
+
+    def execute(self, progress_callback: Optional[Callable[[int, int, str], None]] = None, *args, **kwargs) -> Dict[str, Any]:
+        results: List[Dict[str, Any]] = []
+        total = len(DNS_SERVERS)
+        completed = 0
+
+        with ThreadPoolExecutor(max_workers=25) as executor:
+            future_to_server = {executor.submit(ping_dns_server, s["ip"]): s for s in DNS_SERVERS}
+            for future in as_completed(future_to_server):
+                srv = future_to_server[future]
+                latency = future.result()
+                completed += 1
+                if latency is not None:
+                    results.append({"name": srv["name"], "ip": srv["ip"], "type": srv["type"], "latency_ms": latency, "status": "UP"})
+                else:
+                    results.append({"name": srv["name"], "ip": srv["ip"], "type": srv["type"], "latency_ms": 9999.0, "status": "TIMEOUT"})
+
+                if progress_callback:
+                    progress_callback(completed, total, f"Tested: {srv['name']} ({srv['ip']})")
+
+        results.sort(key=lambda x: x["latency_ms"])
+        best_ir = next((s for s in results if s["type"] == "IR" and s["status"] == "UP"), None)
+        best_int = next((s for s in results if s["type"] == "INT" and s["status"] == "UP"), None)
+
+        hybrid = None
+        if best_ir and best_int:
+            hybrid = {
+                "name": f"Hybrid ({best_ir['name']} + {best_int['name']})",
+                "primary_ip": best_ir["ip"],
+                "alternate_ip": best_int["ip"],
+                "avg_latency": round((best_ir["latency_ms"] + best_int["latency_ms"]) / 2, 2)
+            }
+
+        db_core.log_event("BENCHMARK_DNS", "SUCCESS", f"Tested {total} servers.")
+        return {
+            "status": "success",
+            "data": {
+                "servers": results,
+                "hybrid_pair": hybrid,
+                "fastest_ir": best_ir,
+                "fastest_global": best_int
+            },
+            "message": "DNS benchmark completed."
+        }
+
+@CommandRegistry.register("SET_OS_DNS")
+class SetOsDnsCommand(BaseCommand):
+    def __init__(self, action_name: str = "SET_OS_DNS", params: Optional[Dict[str, Any]] = None):
+        super().__init__(action_name=action_name, params=params)
+
+    def execute(self, progress_callback: Optional[Callable[[int, int, str], None]] = None, *args, **kwargs) -> Dict[str, Any]:
+        primary = self.params.get("primary_ip")
+        alternate = self.params.get("alternate_ip")
+        iface = self.params.get("interface") or get_active_interface_name()
+
+        if not primary:
+            return {"status": "error", "data": None, "message": "Primary DNS is required."}
+
+        cmd_list = [f'netsh interface ip set dns name="{iface}" static {primary}']
+        if alternate:
+            cmd_list.append(f'netsh interface ip add dns name="{iface}" {alternate} index=2')
+        cmd_list.append("ipconfig /flushdns")
+
+        full_cmd = " && ".join(cmd_list)
+        success = execute_elevated_command(full_cmd)
+
+        if success:
+            db_core.log_event("SET_OS_DNS", "SUCCESS", f"Interface: {iface} -> {primary}, {alternate}")
+            return {"status": "success", "data": {"interface": iface, "primary": primary, "alternate": alternate}, "message": f"DNS applied successfully to '{iface}'"}
+        else:
+            db_core.log_event("SET_OS_DNS", "FAILED", f"UAC Elevation denied for interface {iface}")
+            return {"status": "error", "data": None, "message": "Failed to elevate permissions. Please approve the UAC prompt."}
+
+@CommandRegistry.register("BOOST_INTERNET_SPEED")
+class BoostInternetSpeedCommand(BaseCommand):
+    def __init__(self, action_name: str = "BOOST_INTERNET_SPEED", params: Optional[Dict[str, Any]] = None):
+        super().__init__(action_name=action_name, params=params)
+
+    def execute(self, progress_callback: Optional[Callable[[int, int, str], None]] = None, *args, **kwargs) -> Dict[str, Any]:
+        iface = self.params.get("interface") or get_active_interface_name()
+
+        # Comprehensive High-Throughput & Low-Latency Tuning Stack
+        cmds = [
+            # 1. MTU Optimization to Standard 1500 (Eliminates Packet Fragmentation)
+            f'netsh interface ipv4 set subinterface "{iface}" mtu=1500 store=persistent',
+            # 2. TCP Window Auto-Tuning to Normal (High Throughput)
+            'netsh int tcp set global autotuninglevel=normal',
+            # 3. Receive-Side Scaling (RSS) - Multi-core packet handling
+            'netsh int tcp set global rss=enabled',
+            # 4. Receive Segment Coalescing (RSC) - CPU Offloading
+            'netsh int tcp set global rsc=enabled',
+            # 5. Explicit Congestion Notification (ECN) - Prevents Packet Drops
+            'netsh int tcp set global ecncapability=enabled',
+            # 6. Fast Open & Fallback
+            'netsh int tcp set global fastopen=enabled',
+            'netsh int tcp set global fastopenfallback=enabled',
+            # 7. HyStart (Hybrid Slow Start) & PRR
+            'netsh int tcp set global hystart=enabled',
+            'netsh int tcp set global prr=enabled',
+            # 8. Flush & Renew DNS / Network Caches
+            'ipconfig /flushdns',
+            'netsh interface ip delete arpcache'
+        ]
+
+        full_cmd = " && ".join(cmds)
+        success = execute_elevated_command(full_cmd)
+
+        if success:
+            db_core.log_event("BOOST_INTERNET_SPEED", "SUCCESS", f"Optimized TCP Stack & MTU on {iface}")
+            return {
+                "status": "success",
+                "data": {"interface": iface, "mtu": 1500, "tuning": "Optimized High-Performance"},
+                "message": f"Internet & TCP Stack optimized successfully for '{iface}'! MTU set to 1500, ECN/RSS enabled."
+            }
+        else:
+            db_core.log_event("BOOST_INTERNET_SPEED", "FAILED", "UAC elevation rejected.")
+            return {"status": "error", "data": None, "message": "Failed to elevate permissions. Please approve UAC."}
+
+@CommandRegistry.register("RESTORE_DEFAULT_NETWORK")
+class RestoreDefaultNetworkCommand(BaseCommand):
+    def __init__(self, action_name: str = "RESTORE_DEFAULT_NETWORK", params: Optional[Dict[str, Any]] = None):
+        super().__init__(action_name=action_name, params=params)
+
+    def execute(self, progress_callback: Optional[Callable[[int, int, str], None]] = None, *args, **kwargs) -> Dict[str, Any]:
+        iface = self.params.get("interface") or get_active_interface_name()
+
+        cmds = [
+            f'netsh interface ipv4 set subinterface "{iface}" mtu=1500 store=persistent',
+            'netsh int tcp set global autotuninglevel=normal',
+            'netsh int tcp set global rss=enabled',
+            'netsh int tcp set global rsc=enabled',
+            'netsh int tcp set global ecncapability=disabled',
+            'netsh int tcp set global timestamps=disabled',
+            'ipconfig /flushdns'
+        ]
+
+        full_cmd = " && ".join(cmds)
+        success = execute_elevated_command(full_cmd)
+
+        if success:
+            db_core.log_event("RESTORE_DEFAULT_NETWORK", "SUCCESS", f"Restored default network settings on {iface}")
+            return {"status": "success", "data": None, "message": "Default Windows Network Parameters restored."}
+        else:
+            return {"status": "error", "data": None, "message": "Permission elevation denied."}

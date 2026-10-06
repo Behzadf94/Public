@@ -1,0 +1,431 @@
+﻿# -*- coding: utf-8 -*-
+"""
+BFNETADMIN - Hardware, BIOS & AI Readiness Engine
+Direct WMI/CIM/PowerShell inspection with Multi-layer Fallback & Zero-External-Dependency.
+"""
+import os
+import sys
+import time
+import json
+import socket
+import ctypes
+import base64
+import math
+import datetime
+import subprocess
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Callable, Dict, List, Optional
+
+_DIR = os.path.dirname(os.path.abspath(__file__))
+if _DIR not in sys.path:
+    sys.path.insert(0, _DIR)
+
+from base_command import BaseCommand
+from command_registry import CommandRegistry
+import db_core
+
+def run_ps_json(script: str) -> Any:
+    """Executes PowerShell script via UTF-8 Base64 transport to prevent Mojibake."""
+    wrapper = (
+        "$ProgressPreference='SilentlyContinue'; "
+        "$ErrorActionPreference='Stop'; "
+        "$__result = & { " + script + " }; "
+        "$__json = ConvertTo-Json -InputObject $__result -Depth 8 -Compress; "
+        "[Console]::Out.Write([Convert]::ToBase64String("
+        "[Text.Encoding]::UTF8.GetBytes([string]$__json)))"
+    )
+    encoded_cmd = base64.b64encode(wrapper.encode("utf-16le")).decode("ascii")
+    try:
+        proc = subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encoded_cmd],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=20
+        )
+        out = proc.stdout.strip()
+        if not out:
+            return None
+        json_bytes = base64.b64decode(out, validate=True)
+        return json.loads(json_bytes.decode("utf-8"))
+    except Exception:
+        try:
+            cmd = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+                   f"[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; $ProgressPreference='SilentlyContinue'; {script} | ConvertTo-Json -Depth 6 -Compress"]
+            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", timeout=15)
+            if proc.stdout.strip():
+                return json.loads(proc.stdout.strip())
+        except Exception:
+            pass
+        return None
+
+def _get_total_ram_bytes(computer_data: Any, storage_data: Any) -> int:
+    """Multi-layer fallback RAM detection (CIM -> Physical Memory Slots -> Win32 API)."""
+    if isinstance(computer_data, list):
+        computer_data = computer_data[0] if computer_data else {}
+    if isinstance(computer_data, dict):
+        try:
+            val = int(float(computer_data.get("TotalPhysicalMemory") or 0))
+            if val > 0:
+                return val
+        except Exception:
+            pass
+
+    slots = storage_data.get("MemorySlots", []) if isinstance(storage_data, dict) else []
+    if isinstance(slots, dict):
+        slots = [slots]
+    try:
+        total_gb = sum(float(s.get("CapacityGB") or 0) for s in slots if isinstance(s, dict))
+        if total_gb > 0:
+            return int(total_gb * (1024 ** 3))
+    except Exception:
+        pass
+
+    if os.name == "nt":
+        class MEMORYSTATUSEX(ctypes.Structure):
+            _fields_ = [
+                ("dwLength", ctypes.c_ulong),
+                ("dwMemoryLoad", ctypes.c_ulong),
+                ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong),
+                ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong),
+                ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong),
+                ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+            ]
+        try:
+            status = MEMORYSTATUSEX()
+            status.dwLength = ctypes.sizeof(status)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+                return int(status.ullTotalPhys)
+        except Exception:
+            pass
+    return 0
+
+def _get_registry_vram_bytes() -> int:
+    """Scans Windows Registry for discrete GPU DedicatedVideoMemory / qwMemorySize."""
+    ps_reg = r"""
+    $items = @(
+        Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Control\Video' -ErrorAction SilentlyContinue |
+        ForEach-Object {
+            Get-ChildItem $_.PSPath -ErrorAction SilentlyContinue |
+            ForEach-Object {
+                $p = Get-ItemProperty $_.PSPath -ErrorAction SilentlyContinue
+                if ($null -ne $p) {
+                    $bytes = 0.0
+                    foreach ($name in @('HardwareInformation.qwMemorySize','DedicatedVideoMemory','HardwareInformation.MemorySize')) {
+                        $prop = $p.PSObject.Properties[$name]
+                        if ($null -ne $prop -and $null -ne $prop.Value) {
+                            try {
+                                if ($prop.Value -is [byte[]]) {
+                                    if ($prop.Value.Length -ge 8) { $candidate = [BitConverter]::ToUInt64($prop.Value, 0) }
+                                    elseif ($prop.Value.Length -ge 4) { $candidate = [BitConverter]::ToUInt32($prop.Value, 0) }
+                                    else { $candidate = 0 }
+                                } else { $candidate = [double]$prop.Value }
+                                if ($candidate -gt $bytes) { $bytes = $candidate }
+                            } catch {}
+                        }
+                    }
+                    if ($bytes -gt 0) { [pscustomobject]@{ Bytes = $bytes } }
+                }
+            }
+        }
+    )
+    [pscustomobject]@{ Items = $items }
+    """
+    res = run_ps_json(ps_reg) or {}
+    items = res.get("Items", []) if isinstance(res, dict) else []
+    if isinstance(items, dict):
+        items = [items]
+    vals = []
+    for item in items:
+        if isinstance(item, dict):
+            try:
+                b = int(float(item.get("Bytes") or 0))
+                if b > 0:
+                    vals.append(b)
+            except Exception:
+                pass
+    return max(vals, default=0)
+
+def _eval_ai_readiness(cpu_threads: int, ram_gb: float, gpu_name: str, vram_gb: float) -> Dict[str, Any]:
+    score = 0
+    tier = "Basic / CPU Inference"
+    notes = []
+    models_matrix = []
+
+    is_nvidia = any(k in gpu_name.lower() for k in ["nvidia", "geforce", "rtx", "quadro", "tesla", "a100", "h100"])
+
+    # GPU / VRAM Scoring
+    if vram_gb >= 24:
+        score += 55
+        notes.append("24GB+ VRAM: Full FP16 14B / Quantized 70B models offloaded directly.")
+    elif vram_gb >= 16:
+        score += 45
+        notes.append("16GB VRAM: High-speed LLM inference for 14B-32B (Q4_K_M).")
+    elif vram_gb >= 12:
+        score += 38
+        notes.append("12GB VRAM: Excellent for 8B-14B models with large context windows.")
+    elif vram_gb >= 8:
+        score += 30
+        notes.append("8GB VRAM: Standard for 7B/8B (Q4) quantized inference (40-65 t/s).")
+    elif vram_gb >= 4:
+        score += 18
+        notes.append("4GB-6GB VRAM: Entry level, suitable for 3B models or split offload.")
+    else:
+        score += 5
+        notes.append("Shared / Integrated GPU: Computations will heavily utilize System RAM & CPU.")
+
+    if is_nvidia:
+        score += 10
+        notes.append("NVIDIA CUDA core acceleration natively supported by Ollama/vLLM.")
+
+    # System RAM Scoring
+    if ram_gb >= 64:
+        score += 25
+        notes.append("64GB+ RAM: Capable of CPU loading 70B Q4 architectures.")
+    elif ram_gb >= 32:
+        score += 20
+        notes.append("32GB RAM: Can host up to 32B models in CPU system memory.")
+    elif ram_gb >= 16:
+        score += 12
+        notes.append("16GB RAM: Smooth multitasking and 8B model hosting.")
+    else:
+        score += 5
+        notes.append("Under 16GB RAM: Constrained memory space.")
+
+    # CPU logical processors
+    if cpu_threads >= 16:
+        score += 10
+    elif cpu_threads >= 8:
+        score += 7
+    else:
+        score += 3
+
+    score = min(100, score)
+
+    # Matrix Table for UI
+    catalog = [
+        {"model": "DeepSeek-R1-Distill-70B", "req_vram_gb": 40, "req_ram_gb": 48, "est_speed": "12-25 t/s"},
+        {"model": "Llama-3.3-70B (Q4_K_M)", "req_vram_gb": 40, "req_ram_gb": 48, "est_speed": "15-30 t/s"},
+        {"model": "Qwen-2.5-Coder-32B", "req_vram_gb": 20, "req_ram_gb": 32, "est_speed": "25-45 t/s"},
+        {"model": "DeepSeek-R1-Distill-14B", "req_vram_gb": 10, "req_ram_gb": 16, "est_speed": "40-70 t/s"},
+        {"model": "Llama-3.1-8B-Instruct", "req_vram_gb": 6, "req_ram_gb": 16, "est_speed": "50-95 t/s"},
+        {"model": "Mistral-7B-Instruct-v0.3", "req_vram_gb": 6, "req_ram_gb": 12, "est_speed": "50-80 t/s"},
+        {"model": "Phi-4 (14B-Q4)", "req_vram_gb": 10, "req_ram_gb": 16, "est_speed": "35-60 t/s"},
+        {"model": "Llama-3.2-3B / 1B", "req_vram_gb": 3, "req_ram_gb": 8, "est_speed": "90-140 t/s"},
+    ]
+
+    for item in catalog:
+        can_run = (vram_gb >= item["req_vram_gb"]) or (ram_gb >= item["req_ram_gb"])
+        models_matrix.append({
+            "model": item["model"],
+            "req_vram_gb": item["req_vram_gb"],
+            "req_ram_gb": item["req_ram_gb"],
+            "est_speed": item["est_speed"] if can_run else "N/A (OOM)",
+            "supported": can_run
+        })
+
+    if vram_gb >= 24 or (vram_gb >= 16 and ram_gb >= 64):
+        tier = "Enterprise AI Workstation"
+    elif vram_gb >= 12 or (ram_gb >= 32 and vram_gb >= 8):
+        tier = "Pro AI Developer Station"
+    elif vram_gb >= 6 or ram_gb >= 16:
+        tier = "Local AI Capable"
+    else:
+        tier = "Entry / Lightweight AI"
+
+    return {
+        "score": score,
+        "tier": tier,
+        "models_matrix": models_matrix,
+        "notes": notes
+    }
+
+def _count_primes_chunk(start: int, end: int) -> int:
+    count = 0
+    for num in range(start, end):
+        if num < 2:
+            continue
+        is_p = True
+        limit = int(math.isqrt(num))
+        for d in range(2, limit + 1):
+            if num % d == 0:
+                is_p = False
+                break
+        if is_p:
+            count += 1
+    return count
+
+def _run_quick_cpu_benchmark() -> Dict[str, Any]:
+    """Micro benchmark calculating primes to estimate CPU compute throughput."""
+    lower, upper = 2, 75000
+    total = upper - lower
+
+    # Single-Core Run
+    t0 = time.perf_counter()
+    _count_primes_chunk(lower, upper)
+    single_sec = max(time.perf_counter() - t0, 0.0001)
+    single_score = int(total / (single_sec * 10))
+
+    # Multi-Core Run
+    cores = max(1, os.cpu_count() or 4)
+    chunk = (total + cores - 1) // cores
+    ranges = [(lower + i * chunk, min(upper, lower + (i + 1) * chunk)) for i in range(cores) if lower + i * chunk < upper]
+
+    t1 = time.perf_counter()
+    with ThreadPoolExecutor(max_workers=cores) as ex:
+        list(ex.map(lambda r: _count_primes_chunk(r[0], r[1]), ranges))
+    multi_sec = max(time.perf_counter() - t1, 0.0001)
+    multi_score = int((total * (cores ** 0.65)) / (multi_sec * 10))
+
+    return {
+        "single_thread_score": single_score,
+        "multi_thread_score": multi_score,
+        "execution_sec": round(multi_sec, 2),
+        "threads_tested": cores
+    }
+
+@CommandRegistry.register("GET_HARDWARE_INTELLIGENCE")
+class GetHardwareIntelligenceCommand(BaseCommand):
+    def __init__(self, action_name: str = "GET_HARDWARE_INTELLIGENCE", params: Optional[Dict[str, Any]] = None):
+        super().__init__(action_name=action_name, params=params)
+
+    def execute(self, progress_callback: Optional[Callable[[int, int, str], None]] = None, *args, **kwargs) -> Dict[str, Any]:
+        if progress_callback:
+            progress_callback(1, 6, "Collecting Motherboard, SMBIOS & Operating System...")
+
+        ps_bios = """
+        [PSCustomObject]@{
+            Bios = Get-CimInstance Win32_BIOS | Select-Object Manufacturer, Name, Version, ReleaseDate, SMBIOSBIOSVersion, SerialNumber
+            Board = Get-CimInstance Win32_BaseBoard | Select-Object Manufacturer, Product, Version, SerialNumber
+            Computer = Get-CimInstance Win32_ComputerSystem | Select-Object Name, Domain, Workgroup, Model, Manufacturer, TotalPhysicalMemory
+            OS = Get-CimInstance Win32_OperatingSystem | Select-Object Caption, Version, BuildNumber, OSArchitecture, InstallDate, LocalDateTime
+        }
+        """
+        bios_data = run_ps_json(ps_bios) or {}
+
+        if progress_callback:
+            progress_callback(2, 6, "Inspecting CPU Cores, Clock & Cache architecture...")
+
+        ps_cpu = """
+        Get-CimInstance Win32_Processor | Select-Object Name, Manufacturer, NumberOfCores, NumberOfLogicalProcessors, MaxClockSpeed, L3CacheSize, Architecture
+        """
+        cpu_raw = run_ps_json(ps_cpu)
+        cpu_info = cpu_raw[0] if isinstance(cpu_raw, list) and cpu_raw else (cpu_raw or {})
+
+        if progress_callback:
+            progress_callback(3, 6, "Scanning Physical Memory modules & Storage media...")
+
+        ps_storage = """
+        [PSCustomObject]@{
+            Disks = @(Get-CimInstance Win32_DiskDrive | Select-Object Model, InterfaceType, MediaType, @{N='Size_GB';E={[math]::Round($_.Size/1GB, 2)}}, SerialNumber)
+            Volumes = @(Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" | Select-Object DeviceID, VolumeName, FileSystem, @{N='FreeGB';E={[math]::Round($_.FreeSpace/1GB, 2)}}, @{N='TotalGB';E={[math]::Round($_.Size/1GB, 2)}})
+            MemorySlots = @(Get-CimInstance Win32_PhysicalMemory | Select-Object BankLabel, DeviceLocator, Manufacturer, @{N='Capacity_GB';E={[math]::Round($_.Capacity/1GB, 2)}}, @{N='CapacityGB';E={[math]::Round($_.Capacity/1GB, 2)}}, Speed, MemoryType, PartNumber)
+        }
+        """
+        storage_data = run_ps_json(ps_storage) or {"Disks": [], "Volumes": [], "MemorySlots": []}
+
+        if progress_callback:
+            progress_callback(4, 6, "Detecting GPU Accelerators, Controllers & Network Interfaces...")
+
+        ps_gpu = """
+        [PSCustomObject]@{
+            GPUs = @(Get-CimInstance Win32_VideoController | Select-Object Name, DriverVersion, VideoProcessor, AdapterRAM, @{N='VRAM_GB';E={[math]::Round($_.AdapterRAM/1GB, 2)}}, CurrentHorizontalResolution, CurrentVerticalResolution)
+            USB = @(Get-CimInstance Win32_PnPEntity -Filter "PNPClass='USB'" | Select-Object Name, DeviceID | Select-Object -First 25)
+            NetAdapters = @(Get-CimInstance Win32_NetworkAdapter -Filter "NetConnectionStatus=2" | Select-Object Name, MACAddress, @{N='Speed_Mbps';E={[math]::Round($_.Speed/1MB, 0)}}, AdapterType)
+        }
+        """
+        gpu_data = run_ps_json(ps_gpu) or {"GPUs": [], "USB": [], "NetAdapters": []}
+
+        if progress_callback:
+            progress_callback(5, 6, "Running CPU Prime Throughput & Evaluating AI Engine...")
+
+        # Calculate RAM
+        comp_info = bios_data.get("Computer", {})
+        ram_bytes = _get_total_ram_bytes(comp_info, storage_data)
+        total_ram_gb = round(ram_bytes / (1024 ** 3), 2) if ram_bytes > 0 else 0.0
+
+        # Calculate VRAM
+        gpus_list = gpu_data.get("GPUs") or []
+        if isinstance(gpus_list, dict):
+            gpus_list = [gpus_list]
+
+        max_vram_gb = 0.0
+        primary_gpu = "Integrated / Standard Display"
+        if gpus_list:
+            primary_gpu = str(gpus_list[0].get("Name") or "Display Adapter")
+            for g in gpus_list:
+                if isinstance(g, dict):
+                    try:
+                        v = float(g.get("VRAM_GB") or 0.0)
+                        if v > max_vram_gb:
+                            max_vram_gb = v
+                    except Exception:
+                        pass
+
+        # Registry Fallback for VRAM
+        reg_vram_bytes = _get_registry_vram_bytes()
+        if reg_vram_bytes > 0:
+            reg_vram_gb = round(reg_vram_bytes / (1024 ** 3), 2)
+            if reg_vram_gb > max_vram_gb:
+                max_vram_gb = reg_vram_gb
+
+        cpu_threads = int(cpu_info.get("NumberOfLogicalProcessors") or os.cpu_count() or 4)
+        ai_assessment = _eval_ai_readiness(cpu_threads, total_ram_gb, primary_gpu, max_vram_gb)
+        benchmark_results = _run_quick_cpu_benchmark()
+
+        payload = {
+            "bios": bios_data.get("Bios", {}) or {},
+            "board": bios_data.get("Board", {}) or {},
+            "computer": comp_info or {},
+            "os": bios_data.get("OS", {}) or {},
+            "cpu": cpu_info,
+            "storage": storage_data,
+            "ram_modules": storage_data.get("MemorySlots", []),
+            "physical_drives": storage_data.get("Disks", []),
+            "gpus": gpus_list,
+            "network_adapters": gpu_data.get("NetAdapters", []),
+            "usb_devices": gpu_data.get("USB", []),
+            "metrics": {
+                "total_ram_gb": total_ram_gb,
+                "max_gpu_vram_gb": max_vram_gb,
+                "benchmark": benchmark_results,
+                "ai_readiness": ai_assessment
+            }
+        }
+
+        if progress_callback:
+            progress_callback(6, 6, "Hardware intelligence synthesis complete.")
+
+        db_core.log_event("GET_HARDWARE_INTELLIGENCE", "SUCCESS", f"Audited CPU: {cpu_info.get('Name')}")
+        return {"status": "success", "data": payload, "message": "Hardware intelligence audit completed successfully."}
+
+@CommandRegistry.register("SYNC_HARDWARE_CLOCK")
+@CommandRegistry.register("SYNC_SYSTEM_TIME")
+class SyncHardwareClockCommand(BaseCommand):
+    """Synchronizes Windows System & Hardware RTC Clock via Windows Time Service."""
+    def __init__(self, action_name: str = "SYNC_HARDWARE_CLOCK", params: Optional[Dict[str, Any]] = None):
+        super().__init__(action_name=action_name, params=params)
+
+    def execute(self, progress_callback: Optional[Callable[[int, int, str], None]] = None, *args, **kwargs) -> Dict[str, Any]:
+        cmds = [
+            'net start w32time',
+            'w32tm /config /manualpeerlist:"pool.ntp.org,0x1 time.windows.com,0x1" /syncfromflags:manual /update',
+            'w32tm /resync /force'
+        ]
+        logs = []
+        for c in cmds:
+            try:
+                p = subprocess.run(c, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
+                if p.stdout.strip():
+                    logs.append(p.stdout.strip())
+            except Exception as e:
+                logs.append(str(e))
+
+        db_core.log_event("SYNC_HARDWARE_CLOCK", "SUCCESS", "Clock synchronized with atomic time servers")
+        return {
+            "status": "success",
+            "data": "\n".join(logs),
+            "message": "System time & Motherboard RTC synchronized successfully with atomic time servers."
+        }

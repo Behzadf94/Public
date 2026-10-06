@@ -1,0 +1,303 @@
+# -*- coding: utf-8 -*-
+import os
+import sys
+import json
+import threading
+import tkinter as tk
+from tkinter import ttk, messagebox
+
+_DIR = os.path.dirname(os.path.abspath(__file__))
+if _DIR not in sys.path:
+    sys.path.insert(0, _DIR)
+
+import db_core
+from command_registry import CommandRegistry
+import scanner
+import network_utils
+import ad_manager
+
+STATE_FILE = os.path.join(_DIR, "app_state.json")
+
+class BFNetAdminUI:
+    def __init__(self, root: tk.Tk):
+        self.root = root
+        self.root.title("BFNETADMIN - Enterprise IT Management Studio")
+        self.root.geometry("880x620")
+        self.root.minsize(800, 500)
+        self.hybrid_data = None
+
+        self._build_tabs()
+        self._load_state()
+        self.apply_hacker_theme()
+
+    def _build_tabs(self):
+        notebook = ttk.Notebook(self.root)
+        notebook.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        self.tab_scanner = ttk.Frame(notebook)
+        self.tab_dns = ttk.Frame(notebook)
+        self.tab_ad = ttk.Frame(notebook)
+
+        notebook.add(self.tab_scanner, text="  IP Scanner  ")
+        notebook.add(self.tab_dns, text="  DNS Benchmark & Hybrid  ")
+        notebook.add(self.tab_ad, text="  System / AD Tools  ")
+
+        self._setup_scanner_tab()
+        self._setup_dns_tab()
+        self._setup_ad_tab()
+
+    def _setup_scanner_tab(self):
+        frame_top = ttk.LabelFrame(self.tab_scanner, text=" Scan Configuration ")
+        frame_top.pack(fill=tk.X, padx=10, pady=5)
+
+        ttk.Label(frame_top, text="Start IP:").grid(row=0, column=0, padx=5, pady=5)
+        self.ent_start_ip = ttk.Entry(frame_top, width=18)
+        self.ent_start_ip.insert(0, "192.168.1.1")
+        self.ent_start_ip.grid(row=0, column=1, padx=5, pady=5)
+
+        ttk.Label(frame_top, text="End IP:").grid(row=0, column=2, padx=5, pady=5)
+        self.ent_end_ip = ttk.Entry(frame_top, width=18)
+        self.ent_end_ip.insert(0, "192.168.1.254")
+        self.ent_end_ip.grid(row=0, column=3, padx=5, pady=5)
+
+        self.btn_scan = ttk.Button(frame_top, text="Start Scan", command=self._start_scan)
+        self.btn_scan.grid(row=0, column=4, padx=10, pady=5)
+
+        self.tree_scan = ttk.Treeview(self.tab_scanner, columns=("ip", "hostname", "ports"), show="headings")
+        self.tree_scan.heading("ip", text="IP Address")
+        self.tree_scan.heading("hostname", text="Hostname")
+        self.tree_scan.heading("ports", text="Open Ports / Status")
+        self.tree_scan.column("ip", width=140)
+        self.tree_scan.column("hostname", width=220)
+        self.tree_scan.column("ports", width=360)
+        self.tree_scan.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+        self.lbl_scan_status = ttk.Label(self.tab_scanner, text="Ready", relief=tk.SUNKEN, anchor=tk.W)
+        self.lbl_scan_status.pack(fill=tk.X, padx=10, pady=2)
+
+    def _setup_dns_tab(self):
+        frame_top = ttk.Frame(self.tab_dns)
+        frame_top.pack(fill=tk.X, padx=10, pady=5)
+
+        self.btn_bench_dns = ttk.Button(frame_top, text="Benchmark 50 DNS Servers", command=self._start_dns_bench)
+        self.btn_bench_dns.pack(side=tk.LEFT, padx=5)
+
+        self.btn_apply_hybrid = ttk.Button(frame_top, text="Apply Fast Hybrid DNS to Windows", state=tk.DISABLED, command=self._apply_hybrid_dns)
+        self.btn_apply_hybrid.pack(side=tk.LEFT, padx=5)
+
+        self.tree_dns = ttk.Treeview(self.tab_dns, columns=("name", "ip", "type", "latency", "status"), show="headings")
+        self.tree_dns.heading("name", text="DNS Provider")
+        self.tree_dns.heading("ip", text="IP Address")
+        self.tree_dns.heading("type", text="Region/Type")
+        self.tree_dns.heading("latency", text="Latency (ms)")
+        self.tree_dns.heading("status", text="Status")
+        self.tree_dns.column("name", width=200)
+        self.tree_dns.column("ip", width=130)
+        self.tree_dns.column("type", width=100)
+        self.tree_dns.column("latency", width=110)
+        self.tree_dns.column("status", width=90)
+        self.tree_dns.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+        self.lbl_dns_status = ttk.Label(self.tab_dns, text="Ready", relief=tk.SUNKEN, anchor=tk.W)
+        self.lbl_dns_status.pack(fill=tk.X, padx=10, pady=2)
+
+    def _setup_ad_tab(self):
+        frame = ttk.LabelFrame(self.tab_ad, text=" Windows User Management ")
+        frame.pack(fill=tk.X, padx=15, pady=15)
+
+        ttk.Label(frame, text="Username:").grid(row=0, column=0, padx=5, pady=10, sticky=tk.W)
+        self.ent_ad_user = ttk.Entry(frame, width=25)
+        self.ent_ad_user.grid(row=0, column=1, padx=5, pady=10)
+
+        ttk.Label(frame, text="New Password:").grid(row=1, column=0, padx=5, pady=10, sticky=tk.W)
+        self.ent_ad_pass = ttk.Entry(frame, width=25, show="*")
+        self.ent_ad_pass.grid(row=1, column=1, padx=5, pady=10)
+
+        ttk.Button(frame, text="Reset Password", command=self._reset_ad_pass).grid(row=2, column=1, pady=10, sticky=tk.E)
+
+    def _load_state(self):
+        if os.path.exists(STATE_FILE):
+            try:
+                with open(STATE_FILE, "r", encoding="utf-8") as f:
+                    st = json.load(f)
+                    self.ent_start_ip.delete(0, tk.END)
+                    self.ent_start_ip.insert(0, st.get("start_ip", "192.168.1.1"))
+                    self.ent_end_ip.delete(0, tk.END)
+                    self.ent_end_ip.insert(0, st.get("end_ip", "192.168.1.254"))
+                    self.ent_ad_user.delete(0, tk.END)
+                    self.ent_ad_user.insert(0, st.get("username", ""))
+            except Exception:
+                pass
+
+    def _save_state(self):
+        st = {
+            "start_ip": self.ent_start_ip.get().strip(),
+            "end_ip": self.ent_end_ip.get().strip(),
+            "username": self.ent_ad_user.get().strip()
+        }
+        try:
+            with open(STATE_FILE, "w", encoding="utf-8") as f:
+                json.dump(st, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    def _start_scan(self):
+        self._save_state()
+        self.btn_scan.config(state=tk.DISABLED)
+        for row in self.tree_scan.get_children():
+            self.tree_scan.delete(row)
+
+        def runner():
+            def cb(c, t, msg):
+                self.root.after(0, lambda: self.lbl_scan_status.config(text=f"[{c}/{t}] {msg}"))
+
+            res = CommandRegistry.dispatch_from_dict({
+                "action": "SCAN_IP_RANGE",
+                "params": {"start_ip": self.ent_start_ip.get().strip(), "end_ip": self.ent_end_ip.get().strip()}
+            }, progress_cb=cb)
+
+            def finalize():
+                self.btn_scan.config(state=tk.NORMAL)
+                if res["status"] == "success":
+                    for host in res["data"]:
+                        self.tree_scan.insert("", tk.END, values=(host["ip"], host["hostname"], host["ports"]))
+                    self.lbl_scan_status.config(text=res["message"])
+                else:
+                    messagebox.showerror("Error", res["message"])
+            self.root.after(0, finalize)
+
+        threading.Thread(target=runner, daemon=True).start()
+
+    def _start_dns_bench(self):
+        self.btn_bench_dns.config(state=tk.DISABLED)
+        self.btn_apply_hybrid.config(state=tk.DISABLED)
+        for row in self.tree_dns.get_children():
+            self.tree_dns.delete(row)
+
+        def runner():
+            def cb(c, t, msg):
+                self.root.after(0, lambda: self.lbl_dns_status.config(text=f"[{c}/{t}] {msg}"))
+
+            res = CommandRegistry.dispatch_from_dict({"action": "BENCHMARK_DNS"}, progress_cb=cb)
+
+            def finalize():
+                self.btn_bench_dns.config(state=tk.NORMAL)
+                if res["status"] == "success":
+                    data = res["data"]
+                    for s in data["servers"]:
+                        lat_str = f"{s['latency_ms']:.1f}" if s["status"] == "UP" else "Timeout"
+                        self.tree_dns.insert("", tk.END, values=(s["name"], s["ip"], s["type"], lat_str, s["status"]))
+                    self.hybrid_data = data.get("hybrid_pair")
+                    if self.hybrid_data:
+                        self.btn_apply_hybrid.config(state=tk.NORMAL)
+                        self.lbl_dns_status.config(text=f"Ready. Best Hybrid: {self.hybrid_data['name']} (Avg: {self.hybrid_data['avg_latency']} ms)")
+                    else:
+                        self.lbl_dns_status.config(text="Benchmark complete.")
+                else:
+                    messagebox.showerror("Error", res["message"])
+            self.root.after(0, finalize)
+
+        threading.Thread(target=runner, daemon=True).start()
+
+    def _apply_hybrid_dns(self):
+        if not self.hybrid_data:
+            return
+        res = CommandRegistry.dispatch_from_dict({
+            "action": "SET_OS_DNS",
+            "params": {
+                "primary_ip": self.hybrid_data["primary_ip"],
+                "alternate_ip": self.hybrid_data["alternate_ip"]
+            }
+        })
+        if res["status"] == "success":
+            messagebox.showinfo("Success", res["message"])
+        else:
+            messagebox.showerror("Error", res["message"])
+
+    def _reset_ad_pass(self):
+        self._save_state()
+        u = self.ent_ad_user.get().strip()
+        p = self.ent_ad_pass.get().strip()
+        if not u or not p:
+            messagebox.showwarning("Input", "Please provide both Username and Password.")
+            return
+
+        res = CommandRegistry.dispatch_from_dict({
+            "action": "RESET_PASSWORD",
+            "params": {"username": u, "password": p}
+        })
+        if res["status"] == "success":
+            messagebox.showinfo("Success", res["message"])
+            self.ent_ad_pass.delete(0, tk.END)
+        else:
+            messagebox.showerror("Error", res["message"])
+
+def main():
+    root = tk.Tk()
+    app = BFNetAdminUI(root)
+    root.mainloop()
+
+
+
+
+    def apply_hacker_theme(self):
+        # پالت رنگی استاندارد Cyber/Dark
+        c_bg = "#0d1117"
+        c_card = "#161b22"
+        c_neon = "#00ff66"
+        c_text = "#c9d1d9"
+        c_accent = "#1f6feb"
+        c_entry = "#010409"
+        c_border = "#30363d"
+
+        # تنظیم رنگ پنجره اصلی
+        self.root.configure(bg=c_bg)
+
+        style = ttk.Style()
+        # موتور clam برای عبور از محدودیت‌های استایل ویندوز
+        if "clam" in style.theme_names():
+            style.theme_use("clam")
+
+        # پیکربندی استایل‌های ttk
+        style.configure(".", background=c_bg, foreground=c_text, font=("Segoe UI", 9))
+        style.configure("TFrame", background=c_bg)
+        style.configure("TLabel", background=c_bg, foreground=c_neon, font=("Consolas", 10))
+        style.configure("TButton", background=c_card, foreground=c_neon, bordercolor=c_border, darkcolor=c_card, lightcolor=c_card)
+        style.map("TButton", background=[("active", c_accent), ("pressed", c_accent)], foreground=[("active", "#ffffff")])
+
+        # Notebook & Tabs
+        style.configure("TNotebook", background=c_bg, borderwidth=0)
+        style.configure("TNotebook.Tab", background=c_card, foreground=c_text, bordercolor=c_border, padding=[12, 4], font=("Segoe UI", 9, "bold"))
+        style.map("TNotebook.Tab", background=[("selected", c_bg)], foreground=[("selected", c_neon)])
+
+        # Treeview / Data Tables
+        style.configure("Treeview", background=c_entry, foreground=c_text, fieldbackground=c_entry, bordercolor=c_border, rowheight=24)
+        style.configure("Treeview.Heading", background=c_card, foreground=c_neon, relief="flat", font=("Segoe UI", 9, "bold"))
+        style.map("Treeview", background=[("selected", "#21262d")], foreground=[("selected", c_neon)])
+
+        # ورودی‌ها و چک‌باکس‌ها
+        style.configure("TEntry", fieldbackground=c_entry, foreground="#ffffff", insertcolor=c_neon)
+        style.configure("TCheckbutton", background=c_bg, foreground=c_text)
+
+        # پیمایش بازگشتی برای ویجت‌های خالص tk که از ttk ارث‌بری ندارند
+        def _apply_tk_dark(widget):
+            w_class = widget.winfo_class()
+            try:
+                if w_class in ("Entry", "Text"):
+                    widget.configure(bg=c_entry, fg="#ffffff", insertbackground=c_neon, relief="solid", bd=1)
+                elif w_class in ("Label", "Frame", "LabelFrame"):
+                    widget.configure(bg=c_bg)
+                elif w_class == "Button":
+                    widget.configure(bg=c_card, fg=c_neon, activebackground=c_accent, activeforeground="#ffffff")
+                elif w_class == "Listbox":
+                    widget.configure(bg=c_entry, fg=c_text, selectbackground=c_accent)
+            except Exception:
+                pass
+            for child in widget.winfo_children():
+                _apply_tk_dark(child)
+
+        self.root.update_idletasks()
+        _apply_tk_dark(self.root)
+
+if __name__ == "__main__":
+    main()
