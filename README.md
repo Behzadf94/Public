@@ -1,1 +1,1 @@
-# publiز
+# public
