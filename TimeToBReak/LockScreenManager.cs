@@ -1,64 +1,47 @@
-﻿using System;
+﻿// مسیر فایل: LockScreenManager.cs
+using System;
 using System.Collections.Generic;
-using System.Drawing;
 using System.Windows.Forms;
-using T2B.UI;
+using T2B.Strategies;
 
 namespace T2B
 {
-    public sealed class LockScreenManager
-    {
-        private readonly List<Form> _forms = new();
-        private readonly Func<TimeSpan> _getRemaining;
-        private readonly Func<string> _getUserDisplayName;
+	public sealed class LockScreenManager
+	{
+		private readonly List<Form> _screens = new();
+		private readonly Func<TimeSpan> _getRemaining;
+		private readonly Func<string> _getUserDisplayName;
 
-        public LockScreenManager(Func<TimeSpan> getRemaining, Func<string> getUserDisplayName)
-        {
-            _getRemaining = getRemaining ?? throw new ArgumentNullException(nameof(getRemaining));
-            _getUserDisplayName = getUserDisplayName ?? throw new ArgumentNullException(nameof(getUserDisplayName));
-        }
+		public LockScreenManager(Func<TimeSpan> getRemaining, Func<string> getUserDisplayName)
+		{
+			_getRemaining = getRemaining ?? throw new ArgumentNullException(nameof(getRemaining));
+			_getUserDisplayName = getUserDisplayName ?? throw new ArgumentNullException(nameof(getUserDisplayName));
+		}
 
-        public void Show()
-        {
-            // بستن فرم‌های قبلی در صورت وجود برای پیشگیری از باز ماندن پنجره‌ها
-            Hide();
+		public void Show(IBreakDisplayStrategy strategy)
+		{
+			Hide();
 
-            foreach (Screen screen in Screen.AllScreens)
-            {
-                // مانیتور اصلی را نادیده می‌گیریم چون فرم اصلی BreakLockForm آنجا باز می‌شود
-                if (screen.Primary)
-                    continue;
+			foreach (var screen in Screen.AllScreens)
+			{
+				var form = strategy.CreateBreakForm(screen, _getRemaining, _getUserDisplayName);
+				_screens.Add(form);
+				form.Show();
+			}
+		}
 
-                Form f = new Form
-                {
-                    FormBorderStyle = FormBorderStyle.None,
-                    StartPosition = FormStartPosition.Manual,
-                    Bounds = screen.Bounds,
-                    TopMost = true,
-                    BackColor = Color.Black,
-                    ShowInTaskbar = false
-                };
-
-                var saver = new BreakScreenSaverControl(_getRemaining, _getUserDisplayName)
-                {
-                    Dock = DockStyle.Fill
-                };
-
-                f.Controls.Add(saver);
-                _forms.Add(f);
-                f.Show();
-            }
-        }
-
-        public void Hide()
-        {
-            foreach (var f in _forms)
-            {
-                f.Close();
-                f.Dispose();
-            }
-
-            _forms.Clear();
-        }
-    }
+		public void Hide()
+		{
+			foreach (var screen in _screens)
+			{
+				try
+				{
+					screen.Close();
+					screen.Dispose();
+				}
+				catch { }
+			}
+			_screens.Clear();
+		}
+	}
 }

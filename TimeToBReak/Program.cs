@@ -1,73 +1,56 @@
-﻿using Microsoft.Win32;
+﻿// مسیر فایل: Program.cs
+using System;
+using System.IO;
+using System.Threading;
+using System.Windows.Forms;
+using Microsoft.Win32;
 
 namespace T2B
 {
-    internal static class Program
-    {
-        // استفاده از پیشوند Global برای اعمال محدودیت یک نسخه در کل سیستم (تمامی کاربران)
-        private static Mutex? _globalMutex;
+	internal static class Program
+	{
+		private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
+		private const string AppRunName = "BehzadRest";
 
-        [STAThread]
-        static void Main()
-        {
-            const string mutexName = @"Global\T2B_BreakTime_SingleInstance_Mutex_Unique_Id";
+		[STAThread]
+		private static void Main()
+		{
+			// Mutex منحصر به کاربر جاری تا در صورت Switch User اختلال پیش نیاید
+			string userMutexName = $@"Local\T2B_BreakTime_{Environment.UserName}";
+			using var mutex = new Mutex(true, userMutexName, out bool createdNew);
 
-            // بررسی اجرای تنها یک نسخه در کل سیستم
-            _globalMutex = new Mutex(true, mutexName, out bool isNewInstance);
-            if (!isNewInstance)
-            {
-                // یک نسخه از برنامه در حال اجراست؛ این نسخه بسته می‌شود.
-                _globalMutex.Dispose();
-                return;
-            }
+			if (!createdNew)
+			{
+				return; // برنامه در این یوزر در حال اجرا است
+			}
 
-            try
-            {
-                ApplicationConfiguration.Initialize();
+			Application.EnableVisualStyles();
+			Application.SetCompatibleTextRenderingDefault(false);
 
-                // ثبت برنامه در رجیستری برای شروع خودکار در زمان بالا آمدن ویندوز (Startup)
-                RegisterInStartup();
+			EnsureStartupRegistered();
 
-                Application.Run(new BreakApplicationContext());
-            }
-            finally
-            {
-                if (_globalMutex != null)
-                {
-                    _globalMutex.ReleaseMutex();
-                    _globalMutex.Dispose();
-                }
-            }
-        }
+			Application.Run(new BreakApplicationContext());
+		}
 
-        /// <summary>
-        /// ثبت برنامه در استارت‌آپ کاربر فعلی، بدون نیاز به دسترسی مدیر سیستم.
-        /// </summary>
-        private static void RegisterInStartup()
-        {
-            const string appName = "BehzadRest";
-            string runKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
-            string? executablePath = Environment.ProcessPath;
+		public static void EnsureStartupRegistered()
+		{
+			try
+			{
+				using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: true);
+				if (key == null) return;
 
-            if (string.IsNullOrWhiteSpace(executablePath))
-                executablePath = Application.ExecutablePath;
+				string exePath = $"\"{Application.ExecutablePath}\"";
+				var currentVal = key.GetValue(AppRunName) as string;
 
-            try
-            {
-                // ثبت در HKCU برای جلوگیری از نیاز به elevation و اجرای برنامه در نشست کاربر.
-                using (RegistryKey key = Registry.CurrentUser.CreateSubKey(runKeyPath, writable: true))
-                {
-                    string startupCommand = $"\"{executablePath}\"";
-                    string? currentValue = key.GetValue(appName) as string;
-
-                    if (!string.Equals(currentValue, startupCommand, StringComparison.OrdinalIgnoreCase))
-                        key.SetValue(appName, startupCommand, RegistryValueKind.String);
-                }
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"Failed to register startup entry: {ex.Message}");
-            }
-        }
-    }
+				if (string.IsNullOrEmpty(currentVal) || !string.Equals(currentVal, exePath, StringComparison.OrdinalIgnoreCase))
+				{
+					key.SetValue(AppRunName, exePath);
+				}
+			}
+			catch (Exception ex)
+			{
+				System.Diagnostics.Debug.WriteLine($"Registry self-healing error: {ex.Message}");
+			}
+		}
+	}
 }
